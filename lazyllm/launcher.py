@@ -11,9 +11,13 @@ from queue import Queue
 from datetime import datetime
 from multiprocessing.util import register_after_fork
 from collections import defaultdict
+from urllib.parse import urljoin, urlparse, urlencode
 import uuid
 import copy
 import psutil
+import asyncio
+import websockets
+import base64
 
 import lazyllm
 from lazyllm import LazyLLMRegisterMetaClass, LazyLLMCMD, final, LOG
@@ -21,7 +25,7 @@ from lazyllm import LazyLLMRegisterMetaClass, LazyLLMCMD, final, LOG
 from lazyllm.thirdparty import kubernetes as k8s
 import requests
 import yaml
-from typing import Literal
+from typing import Literal, Dict, Optional
 
 class Status(Enum):
     TBSubmitted = 0,
@@ -81,7 +85,12 @@ lazyllm.config.add('sco_resource_type', str, 'N3lS.Ii.I60', 'SCO_RESOURCE_TYPE')
 lazyllm.config.add('cuda_visible', bool, False, 'CUDA_VISIBLE')
 lazyllm.config.add('k8s_env_name', str, '', 'K8S_ENV_NAME')
 lazyllm.config.add('k8s_config_path', str, '', 'K8S_CONFIG_PATH')
-
+lazyllm.config.add('boc_env_name', str, '', 'BOC_ENV_NAME')
+lazyllm.config.add('boc_config_path', str, '', 'BOC_CONFIG_PATH')
+lazyllm.config.add('boc_login_name', str, '', 'BOC_LOGIN_NAME')
+lazyllm.config.add('boc_login_passwd', str, '', 'BOC_LOGIN_PASSWD')
+lazyllm.config.add('boc_tenant_name', str, '', 'BOC_TENANT_NAME')
+lazyllm.config.add('boc_project_name', str, '', 'BOC_PROJECT_NAME')
 
 # store cmd, return message and command output.
 # LazyLLMCMD's post_function can get message form this class.
@@ -186,6 +195,549 @@ class Job(object):
 
     def __deepcopy__(self, memo=None):
         raise RuntimeError('Cannot copy Job object')
+
+
+@final
+class BocloudLauncher(LazyLLMLaunchersBase):
+    all_processes = defaultdict(list)
+
+    class Job(Job):
+        def __init__(self, cmd, launcher, task_type: Literal["train", "fine_tune", "infer"] = "infer", *, sync=True):
+            super(__class__, self).__init__(cmd, launcher, sync=sync)
+            self.cmd = cmd
+            self.launcher = launcher
+            self.task_type = task_type
+            self.sync = sync
+            self.jobid = None
+            self.queue = Queue()
+            self.output_hooks = []
+            self.parsed_url = urlparse(self.launcher.api_base_url)
+            # Extract the protocol (scheme), hostname (hostname) and port number (port)
+            self.base_url = f"{self.parsed_url.scheme}://{self.parsed_url.hostname}:{self.parsed_url.port}"
+            self.infer_url = None
+
+        def _wrap_cmd(self, cmd):
+            pythonpath = os.getenv("PYTHONPATH", '')
+            precmd = (f'''export PYTHONPATH={os.getcwd()}:{pythonpath}:$PYTHONPATH '''
+                      f'''&& export PATH={os.path.join(os.path.expanduser('~'), '.local/bin')}:$PATH && ''')
+            if lazyllm.config['boc_env_name']:
+                precmd = f"source activate {lazyllm.config['boc_env_name']} && " + precmd
+            env_vars = os.environ
+            lazyllm_vars = {k: v for k, v in env_vars.items() if k.startswith("LAZYLLM")}
+            if lazyllm_vars:
+                precmd += " && ".join(f"export {k}={v}" for k, v in lazyllm_vars.items()) + " && "
+            precmd += '''ifconfig | grep "inet " | awk "{printf \\"LAZYLLMIP %s\\\\n\\", \$2}" &&'''  # noqa W605
+            if self.task_type == "infer":
+                port_match = re.search(r"--port=(\d+)", cmd)
+                if port_match:
+                    port = port_match.group(1)
+                    LOG.info(f"Port: {port}")
+                    self.deployment_port = int(port)
+                else:
+                    LOG.info("Port not found")
+                    raise ValueError("Failed to obtain application port.")
+            return f'bash\n-c\n{precmd} {cmd}'
+
+        def _create_task(self, cmd):
+            if self.task_type == "train":
+                raise ValueError("Currently lazyllm does not support pre-training.")
+            elif self.task_type == "fine_tune":
+                url = urljoin(self.launcher.api_base_url, "trainapi/model/train")
+                payload = {
+                    "name": "fine-tune-task",
+                    "type": "standalone",
+                    "frameworkOptions": {
+                        "name": "standard",
+                        "ps": {
+                            "master": "master",
+                            "work": "worker",
+                            "port": 2222
+                        }
+                    },
+                    "resourceGroupId": self.launcher.resource_configs["resourceGroupId"],
+                    "resourceSpecId": int(self.launcher.resource_configs["resourceSpecId"]),
+                    "projectId": int(self.launcher.tokens.get("projectId")),
+                    "rdma": False,
+                    "tasks": [
+                        {
+                            "image": self.launcher.resource_configs["image"],
+                            "minAvailable": 1,
+                            "replicas": 1,
+                            "name": "worker",
+                            "imagePullPolicy": "IfNotPresent"
+                        }
+                    ],
+                    "shmSize": 512,
+                    "envs": [],
+                    "command": cmd + ';echo "Done"',
+                    "ports": [8888, 9999],
+                    "fileManagerMount": self.launcher.resource_configs["fileManagerMount"],
+                    "suspend": False,
+                    "terminate": False,
+                    "schedulerOptions": {
+                        "priorityClassName": "train-med",
+                        "schedulerName": "volcano",
+                        "queue": "default",
+                        "podGroup": "default",
+                        "strategy": "spreadout",
+                        "minAvailable": 1
+                    },
+                    "tensorboardOptions": {
+                        "containerPath": None,
+                        "hostPath": None,
+                        "autoStopTime": 1
+                    }
+                }
+            elif self.task_type == "infer":
+                url = urljoin(self.launcher.api_base_url, "inferapi/model/infer")
+                payload = {
+                    "name": "infer-task",
+                    "mode": "standard",
+                    "options": {
+                        "modelName": "",
+                        "modelId": 10,
+                        "modelVersion": 1,
+                        "modelType": "text-generation",
+                        "framework": "llvm"
+                    },
+                    "xinference": {
+                        "modelFramework": "",
+                        "modelName": "",
+                        "modelSize": "",
+                        "modelFormat": "",
+                        "modeQuantization": ""
+                    },
+                    "batch": False,
+                    "serviceEndpoint": "",
+                    "servicePath": "",
+                    "apiPath": self.launcher.infer_path,
+                    "suspend": False,
+                    "terminate": False,
+                    "modelSource": 1,
+                    "imageSource": 2,
+                    "resourceGroupId": self.launcher.resource_configs["resourceGroupId"],
+                    "resourceSpecId": int(self.launcher.resource_configs["resourceSpecId"]),
+                    "projectId": int(self.launcher.tokens.get("projectId")),
+                    "shmSize": 512,
+                    "port": self.deployment_port,
+                    "envs": [],
+                    "image": self.launcher.resource_configs['image'],
+                    "replicas": 1,
+                    "command": cmd,
+                    "schedulerOptions": {
+                        "priorityClassName": "train-med",
+                        "schedulerName": "volcano",
+                        "queue": "default",
+                        "podGroup": "default",
+                        "strategy": "spreadout",
+                        "minAvailable": 1
+                    },
+                    "fileManagerMount": self.launcher.resource_configs["fileManagerMount"]
+                }
+            else:
+                raise ValueError(f"Unsupported task type: {self.task_type}")
+
+            headers = {"Content-Type": "application/json"}
+            headers.update(self.launcher.tokens)
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    self.jobid = data["data"]["id"]
+                    LOG.info(f"{self.task_type.capitalize()} task created with ID: {self.jobid}")
+                except TypeError:
+                    raise ValueError(data.get("message"))
+            else:
+                raise RuntimeError(f"Failed to create {self.task_type} task: {response.text}")
+
+        def _stop_task(self):
+            if self.task_type in ["train", "fine_tune"]:
+                url = urljoin(self.launcher.api_base_url, f"trainapi/model/train/{self._get_jobid()}")
+            elif self.task_type == "infer":
+                url = urljoin(self.launcher.api_base_url, f"inferapi/model/infer/{self._get_jobid()}")
+            else:
+                raise ValueError(f"Unsupported task type: {self.task_type}")
+            headers = {"Content-type": "application/json"}
+            headers.update(self.launcher.tokens)
+            try:
+                response = requests.delete(url=url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                tid = data.get("data", {}).get("id")
+                if tid == self._get_jobid():
+                    LOG.info(f"{self.task_type} task {self._get_jobid()} already deleted.")
+                else:
+                    raise ValueError(f"The deleted {self.task_type} task is {tid} instead of {self._get_jobid}")
+            except requests.exceptions.RequestException as e:
+                LOG.error(f"Failed to delete the {self.task_type} task: {e}")
+                raise
+
+        def _get_task_status(self):
+            if self.task_type in ["train", "fine_tune"]:
+                url = urljoin(self.launcher.api_base_url, f"trainapi/model/train/{self.jobid}")
+            elif self.task_type == "infer":
+                url = urljoin(self.launcher.api_base_url, f"inferapi/model/infer/{self.jobid}")
+            else:
+                raise ValueError(f"Unsupported task type: {self.task_type}")
+
+            headers = {"Content-type": "application/json"}
+            headers.update(self.launcher.tokens)
+            response = requests.get(url=url, headers=headers)
+            if response.status_code == 200:
+                state = response.json().get("data", {}).get("status", {}).get("state")
+                return state if isinstance(state, str) else state.get("phase")
+            else:
+                raise RuntimeError(f"Failed to get {self.task_type} task status: {response.text}")
+
+        def _requestTaskDetails(self):
+            if self.task_type in ["train", "fine_tune"]:
+                url = urljoin(self.launcher.api_base_url, f"trainapi/model/train/{self._get_jobid()}")
+            elif self.task_type == "infer":
+                url = urljoin(self.launcher.api_base_url, f"inferapi/model/infer/{self._get_jobid()}")
+            else:
+                raise ValueError(f"Unsupported task type: {self.task_type}")
+            headers = {"Content-type": "application/json"}
+            headers.update(self.launcher.tokens)
+            try:
+                response = requests.get(url=url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                if data.get("code") == 200:
+                    if self.task_type in ["train", "fine_tune"]:
+                        ret = data.get("data", {}).get("status", {})
+                        cluster_name = ret.get("job", {}).get("cluster", {}).get("name")
+                        project_namespace = ret.get("job", {}).get("namespace")
+                    else:
+                        ret = data.get("data", {})
+                        cluster_name = ret.get("clusterName")
+                        project_namespace = ret.get("projectNamespace")
+                        url = ret.get("url")
+                        self.infer_url = f"{self.base_url}{url}"
+                    return (cluster_name, project_namespace)
+                else:
+                    raise ValueError(f"Request failed: {data}")
+            except requests.exceptions.RequestException as e:
+                LOG.error(f"Failed to request train task details: {e}")
+                raise
+
+        def _getTaskInstanceList(self):
+            url = urljoin(self.launcher.api_base_url, "commonserverapi/common/tasks/instances")
+            headers = {"Content-type": "application/json"}
+            headers.update(self.launcher.tokens)
+            names = self._requestTaskDetails()
+            params = {"clusterName": names[0], "taskId": self._get_jobid(), "namespace": names[1]}
+            if self.task_type in ["train", "fine_tune"]:
+                params["taskType"] = "train"
+            else:
+                params['taskType'] = "infer"
+            try:
+                response = requests.get(url=url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                ret = data.get("data", {}).get("items", [])[0]
+                pod_name = ret.get("name")
+                containers = [item.get("name") for item in ret.get("containers")]
+                return (names[0], names[1], pod_name, containers)
+            except requests.exceptions.RequestException as e:
+                LOG.error(f"Failed to request train task instance list: {e}")
+                raise
+
+        async def _fetch_logs(self):
+            ret = self._getTaskInstanceList()
+            config = {"cluster_name": ret[0], "pod": ret[2], "container": ret[3][0], "namespace": ret[1]}
+            # Constructing URL parameters
+            follow = "true"
+            start_timestamp = int(time.time())  # Current timestamp
+
+            headers = {"Content-type": "application/json", "Origin": self.base_url}
+            headers.update(self.launcher.tokens)
+
+            params = {
+                "clusterName": config.get("cluster_name"),
+                "namespace": config.get("namespace"),
+                "pod": config.get("pod"),
+                "container": config.get("container"),
+                "follow": follow,
+                "startTimestamp": start_timestamp
+            }
+
+            query = urlencode(params)
+
+            # WebSocket address
+            ws_url = f"ws://{self.parsed_url.hostname}:{self.parsed_url.port}/aios/common/tasks/logs?{query}"
+            LOG.info(f"url: {ws_url}")
+            reconnect_attempts = 0
+            while reconnect_attempts < self.launcher.ws_retry:
+                try:
+                    async with websockets.connect(ws_url, extra_headers=headers, ping_interval=30,
+                                                  ping_timeout=300, close_timeout=0) as websocket:
+                        LOG.info("Connected Log WebSocket")
+                        while True:
+                            message = await websocket.recv()
+                            if self.task_type in ["train", "fine_tune"] and message.strip() == "Done":
+                                return
+                            LOG.info(message)
+                            if self.task_type == "infer" and "Press CTRL+C to quit" in message:
+                                self.queue.put(f"Uvicorn running on {self.infer_url}")
+                                return
+                except websockets.exceptions.ConnectionClosed as e:
+                    LOG.error(f"Log Connection Closed: {e}")
+                except Exception as e:
+                    LOG.error(f"Log Connection Exception: {e}")
+
+                reconnect_attempts += 1
+                LOG.info(f"Trying to reconnect, {reconnect_attempts }/{self.launcher.ws_retry} times...")
+                await asyncio.sleep(5)
+
+            self.queue.put(f"ERROR: Bocloud {self.task_type} Service failed to start.")
+            LOG.error("Exceeded the maximum number of reconnections, stopped trying to connect.")
+
+        def _start(self, *, fixed=False):
+            cmd = self.get_executable_cmd(fixed=fixed)
+            LOG.info(f'Command: {cmd.cmd!r}')
+            self._create_task(cmd.cmd)
+            self.launcher.all_processes[self.launcher._id].append((self.jobid, self))
+            self.wait()
+
+            if self.status == Status.Running:
+                asyncio.run(self._fetch_logs())
+
+        def _remove_job(self, jobid):
+            job_list = self.launcher.all_processes.get(self.launcher._id, [])
+            # Find matching job tuples
+            for i, (jid, job) in enumerate(job_list):
+                if jid == jobid:
+                    job_list.pop(i)
+                    LOG.info(f"Removed job {jobid} from launcher {self.launcher._id}")
+                    break
+            else:
+                LOG.warning(f"Job {jobid} not found under launcher {self.launcher._id}")
+
+        def stop(self):
+            if self.jobid:
+                self._stop_task()
+                self._remove_job(self.jobid)
+
+            self.queue = Queue()
+            self.jobid = None
+
+        def _get_jobid(self):
+            return self.jobid
+
+        @property
+        def status(self):
+            state = self._get_task_status()
+            if state == "Running":
+                return Status.Running
+            elif state == "Completed":
+                return Status.Done
+            elif state == "Pending":
+                return Status.Pending
+            else:
+                return Status.Failed
+
+        def wait(self):
+            n = 0
+            while self.status == Status.Pending:
+                time.sleep(2)
+                LOG.info(f"status: {self.status}")
+                n += 1
+                if n > 1800:  # 3600s
+                    LOG.error('Launch failed: No computing resources are available.')
+                    self.queue.put(f"ERROR: Bocloud {self.task_type} Service failed to start.")
+                    break
+            return self.status
+
+        def get_jobip(self):
+            return self.infer_url if self.infer_url else ""
+
+    def __init__(self,
+                 api_base_url: str = None,
+                 tokens: Dict[str, str] = None,
+                 resource_configs: Dict[str, str] = None,
+                 task_type: Literal["train", "fine_tune", "infer"] = None,
+                 namespace: str = None,
+                 sync=True,
+                 ngpus=None,
+                 retry=3,
+                 infer_path=None,
+                 **kwargs):
+        super().__init__()
+        self.ngpus = ngpus
+        self.ws_retry = retry
+        config_data = self._read_config_file(lazyllm.config['boc_config_path']) \
+            if lazyllm.config['boc_config_path'] else {}
+        self.api_base_url = api_base_url if api_base_url else config_data["BASE_URL"]
+        self.tokens = tokens
+        self.resource_configs = resource_configs if resource_configs else config_data['resource_config']
+        self.task_type = task_type if task_type else config_data.get("task_type", "infer")
+        self.namespace = namespace if namespace else config_data.get("namespace", "lazyllm")
+        self.infer_path = infer_path if infer_path else config_data.get("infer_path", "/generate")
+        self.sync = sync
+
+    def _auth_and_get_resource(self):
+        token = self._accessToken()
+        tid = self._getTenantId(token)
+        token["modelId"] = tid
+        pId = self._getProjectId(token)
+        token["projectId"] = pId
+        self.tokens = self.tokens if self.tokens else token
+
+        if "resourceGroupId" not in self.resource_configs or "resourceSpecId" not in self.resource_configs:
+            resourceGroupId, specId = self._getResourceSpecByProject(
+                self.tokens,
+                self.resource_configs.get("resourceGroupName", None),
+                self.resource_configs.get("resourceSpecName", None)
+            )
+            if "resourceGroupId" not in self.resource_configs:
+                self.resource_configs["resourceGroupId"] = resourceGroupId
+            if "resourceSpecId" not in self.resource_configs:
+                self.resource_configs['resourceSpecId'] = specId
+        LOG.info(f"resource_configs: {self.resource_configs}")
+
+    def _read_config_file(self, file_path):
+        assert os.path.exists(file_path), "Resource config file must be exist."
+        assert os.path.isabs(file_path), "Resource config file path must be an absolute path."
+
+        with open(file_path, 'r') as fp:
+            try:
+                data = yaml.safe_load(fp)
+                return data
+            except yaml.YAMLError as e:
+                LOG.error(f"Exception when reading resource configuration file: {e}")
+                raise ValueError("BOC resource configuration file format error.")
+
+    def _login(self):
+        name = lazyllm.config['boc_login_name']
+        passwd = lazyllm.config['boc_login_passwd']
+        headers = {"Content-Type": "application/json"}
+        encode_pd = base64.b64encode(passwd.encode('utf-8'))
+        encode_str = encode_pd.decode("utf-8")
+        data = {"typeConfigId": 0, "userName": name, "password": encode_str,
+                "clientId": "be2030fc2aa0416d8c9dcaa5081fb1ad", "multfactor": "Y"}
+        url = urljoin(self.api_base_url, "upmstreeapi/login")
+        try:
+            response = requests.post(url=url, headers=headers, json=data)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", {}).get("code")
+        except requests.exceptions.RequestException as e:
+            LOG.error(f"Login request failed: {e}")
+            raise
+
+    def _accessToken(self):
+        code = self._login()
+        params = {"code": code}
+        url = urljoin(self.api_base_url, "upmstreeapi/accessToken")
+        headers = {"Content-Type": "application/json"}
+        try:
+            response = requests.get(url=url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return {"Token": data.get("data", {}).get("token"), "Refreshtoken": data.get("data", {}).get("refreshToken")}
+        except requests.exceptions.RequestException as e:
+            LOG.error(f"Failed to obtain token request: {e}")
+            raise
+
+    def _getTenantId(self, token: Dict[str, str]):
+        tenantName = lazyllm.config['boc_tenant_name']
+        headers = {"Content-Type": "application/json"}
+        headers.update(token)
+        url = urljoin(self.api_base_url, "upmstreeapi/tenants/account")
+        try:
+            response = requests.get(url=url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            ret = data.get("data", [])
+            for item in ret:
+                if item.get("name") == tenantName:
+                    return str(item.get("id"))
+            raise ValueError(f"The tenant ID with tenant name {tenantName} was not found.")
+        except requests.exceptions.RequestException as e:
+            LOG.error(f"Failed to obtain tenant id: {e}")
+            raise
+
+    def _getProjectId(self, token: Dict[str, str], proConfig: Optional[Dict[str, str | int]] = None):
+        projectName = lazyllm.config['boc_project_name']
+        params = {key: val for key, val in proConfig.items() if val} if proConfig else {}
+        url = urljoin(self.api_base_url, "upmstreeapi/projects" if params else "upmstreeapi/projects/list")
+        headers = {"Content-type": "application/json"}
+        headers.update(token)
+        try:
+            response = requests.get(url=url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            ret = data.get("data", {}).get("data", {}) if params else data.get("data")
+            for item in ret:
+                if item.get("projectName") == projectName:
+                    return str(item.get("projectId"))
+            raise ValueError(f"No project ID found for project named {projectName}")
+        except requests.exceptions.RequestException as e:
+            LOG.error(f"Failed to obtain project ID: {e}")
+            raise
+
+    def _getResourceSpecByProject(self, token: Dict[str, str], group_name: str = None, spec_name: str = None):
+        headers = {"Content-type": "application/json"}
+        headers.update(token)
+        url = urljoin(self.api_base_url, f"upmstreeapi/projects/{token.get('projectId')}")
+        try:
+            response = requests.get(url=url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            LOG.info(f"Resource Group Id and SpecId: {data}")
+            resGroup = data.get("data", {}).get("resourceGroup", [])
+            if group_name:
+                group = next((g for g in resGroup if g["name"] == group_name), None)
+                group_id = group['id'] if group else None
+                if group_id is None:
+                    raise ValueError(f"The specified resource group name {group_name} was not found "
+                                     f"in the resource group {resGroup}")
+            else:
+                group_id = random.choice(resGroup)['id'] if resGroup else None
+                if group_id is None:
+                    raise ValueError(f"No valid resource group: {resGroup}")
+
+            resSpec = data.get("data", {}).get("resourceSpec", [])
+            if spec_name:
+                spec = next((s for s in resSpec if s['name'] == spec_name), None)
+                spec_id = spec['quotaId'] if spec else None
+                if spec_id is None:
+                    raise ValueError(f"The specified resource spec name {spec_name} was not found "
+                                     f"in the resource spec {resSpec}")
+            else:
+                gpu_specs = [
+                    s for s in resSpec if s['specType'] == "gpu" and s['useNum'] < s['totalNum']
+                ]
+                if gpu_specs:
+                    # Sort by useNum in ascending order, with the least busy first
+                    spec = sorted(gpu_specs, key=lambda s: s['useNum'])[0]
+                    spec_id = spec['quotaId']
+                else:
+                    raise ValueError(f"No idle resource spec were found for the gpu: {resSpec}")
+
+            return group_id, spec_id
+        except requests.exceptions.RequestException as e:
+            LOG.error(f"Failed to obtain resource: {e}")
+            raise
+
+    def makejob(self, cmd):
+        return BocloudLauncher.Job(cmd, self, task_type=self.task_type, sync=self.sync)
+
+    def launch(self, f, *args, **kw):
+        if isinstance(f, BocloudLauncher.Job):
+            self._auth_and_get_resource()
+            f.start()
+            self.job = f
+            if self.sync:
+                while f.status == Status.Running:
+                    time.sleep(10)
+                f.stop()
+            return f.return_value
+        elif callable(f):
+            LOG.error("Async execution in Bocloud is not supported currently.")
+            raise RuntimeError("Bocloud launcher requires a Job object.")
 
 @final
 class K8sLauncher(LazyLLMLaunchersBase):
@@ -1518,7 +2070,7 @@ class RemoteLauncher(LazyLLMLaunchersBase):
 
 def cleanup():
     # empty
-    for m in (EmptyLauncher, SlurmLauncher, ScoLauncher, K8sLauncher):
+    for m in (EmptyLauncher, SlurmLauncher, ScoLauncher, K8sLauncher, BocloudLauncher):
         while m.all_processes:
             _, vs = m.all_processes.popitem()
             for k, v in vs:

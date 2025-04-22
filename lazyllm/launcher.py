@@ -228,9 +228,9 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 precmd += " && ".join(f"export {k}={v}" for k, v in lazyllm_vars.items()) + " && "
             precmd += '''ifconfig | grep "inet " | awk "{printf \\"LAZYLLMIP %s\\\\n\\", \$2}" &&'''  # noqa W605
             if self.task_type == "infer":
-                port_match = re.search(r"--port=(\d+)", cmd)
+                port_match = re.search(r"--(:?port|open_port)=(\d+)", cmd)
                 if port_match:
-                    port = port_match.group(1)
+                    port = port_match.group(2)
                     LOG.info(f"Port: {port}")
                     self.deployment_port = int(port)
                 else:

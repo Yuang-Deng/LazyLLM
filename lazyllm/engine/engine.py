@@ -366,7 +366,7 @@ def make_ifs(cond: str, true: List[dict], false: List[dict], judge_on_full_input
 
 @NodeConstructor.register('LocalLLM')
 def make_local_llm(base_model: str, target_path: str = '', prompt: str = '', stream: bool = False,
-                   return_trace: bool = False, deploy_method: str = 'vllm', url: Optional[str] = None,
+                   return_trace: bool = False, deploy_method: str = 'mindie', url: Optional[str] = None,
                    history: Optional[List[List[str]]] = None):
     if history and not (isinstance(history, list) and all(len(h) == 2 and isinstance(h, list) for h in history)):
         raise TypeError('history must be List[List[str, str]]')

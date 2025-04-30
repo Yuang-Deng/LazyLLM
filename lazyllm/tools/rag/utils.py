@@ -252,7 +252,6 @@ class SqliteDocListManager(DocListManager):
         root_dir = os.path.expanduser(os.path.join(config['home'], '.dbs'))
         os.makedirs(root_dir, exist_ok=True)
         self._db_path = os.path.join(root_dir, f'.lazyllm_dlmanager.{self._id}.db')
-        print("")
         self._db_lock = FileLock(self._db_path + '.lock')
         # ensure that this connection is not used in another thread when sqlite3 is not threadsafe
         self._check_same_thread = not sqlite3_check_threadsafety()
@@ -530,13 +529,13 @@ class SqliteDocListManager(DocListManager):
 
         for i in range(0, len(files), batch_size):
             batch_files = files[i:i + batch_size]
-            batch_metadatas = metadatas[i:i + batch_size] if metadatas else None
+            batch_metadatas = metadatas[i:i + batch_size] if metadatas else [None] * batch_size
             vals = []
 
             for i, file_path in enumerate(batch_files):
                 doc_id = gen_docid(file_path)
 
-                metadata = batch_metadatas[i].copy() if batch_metadatas else {}
+                metadata = batch_metadatas[i].copy() if batch_metadatas[i] else {}
                 metadata.setdefault(RAG_DOC_ID, doc_id)
                 metadata.setdefault(RAG_DOC_PATH, file_path)
 

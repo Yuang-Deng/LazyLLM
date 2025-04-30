@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Union, Tuple, Any
 from lazyllm import LOG, once_wrapper
 from .transform import (NodeTransform, FuncNodeTransform, SentenceSplitter, LLMParser,
-                        AdaptiveTransform, make_transform, TransformArgs)
+                        AdaptiveTransform, make_transform, TransformArgs, TransformArgs as TArgs)
 from .index_base import IndexBase
 from .store_base import StoreBase, LAZY_ROOT_NAME, LAZY_IMAGE_GROUP
 from .map_store import MapStore
@@ -18,6 +18,7 @@ from .data_loaders import DirectoryReader
 from .utils import DocListManager, gen_docid, is_sparse
 from .global_metadata import GlobalMetadataDesc, RAG_DOC_ID, RAG_DOC_PATH
 from .data_type import DataType
+from dataclasses import dataclass
 import threading
 import time
 
@@ -39,6 +40,21 @@ class StorePlaceholder:
 
 class EmbedPlaceholder:
     pass
+
+
+class BuiltinGroups(object):
+    @dataclass
+    class Struct:
+        name: str
+        args: TransformArgs
+        parent: str = LAZY_ROOT_NAME
+
+        def __str__(self): return self.name
+
+    CoarseChunk = Struct('CoarseChunk', TArgs(f=SentenceSplitter, kwargs=dict(chunk_size=1024, chunk_overlap=100)))
+    MediumChunk = Struct('MediumChunk', TArgs(f=SentenceSplitter, kwargs=dict(chunk_size=256, chunk_overlap=25)))
+    FineChunk = Struct('FineChunk', TArgs(f=SentenceSplitter, kwargs=dict(chunk_size=128, chunk_overlap=12)))
+
 
 class DocImpl:
     _builtin_node_groups: Dict[str, Dict] = {}
@@ -99,7 +115,7 @@ class DocImpl:
             ids, paths, metadatas = self._list_files()
             ids, paths, metadatas = self._delete_nonexistent_docs_on_startup(ids, paths, metadatas)
             if paths:
-                if not metadatas: metadatas = [{}] * len(paths)
+                if not metadatas: metadatas = [{} for _ in range(len(paths))]
                 for idx, meta in enumerate(metadatas):
                     meta[RAG_DOC_ID] = ids[idx] if ids else gen_docid(paths[idx])
                     meta[RAG_DOC_PATH] = paths[idx]
@@ -197,6 +213,7 @@ class DocImpl:
     def _create_node_group_impl(cls, group_name, name, transform: Union[str, Callable] = None,
                                 parent: str = LAZY_ROOT_NAME, *, trans_node: bool = None,
                                 num_workers: int = 0, **kwargs):
+        group_name, parent = str(group_name), str(parent)
         groups = getattr(cls, group_name)
 
         def get_trans(t): return TransformArgs.from_dict(t) if isinstance(t, dict) else t
@@ -279,17 +296,16 @@ class DocImpl:
         while True:
             # Apply meta changes
             rows = self._dlm.fetch_docs_changed_meta(self._kb_group_name)
-            if rows:
-                for row in rows:
-                    new_meta_dict = json.loads(row[1]) if row[1] else {}
-                    self.store.update_doc_meta(row[0], new_meta_dict)
+            for row in rows:
+                new_meta_dict = json.loads(row[1]) if row[1] else {}
+                self.store.update_doc_meta(row[0], new_meta_dict)
 
             # Step 1: do doc-parsing, highest priority
             docs = self._dlm.get_docs_need_reparse(group=self._kb_group_name)
             if docs:
                 filepaths = [doc.path for doc in docs]
                 ids = [doc.doc_id for doc in docs]
-                metadatas = [doc.metadata for doc in docs]
+                metadatas = [json.loads(doc.meta) if doc.meta else None for doc in docs]
                 # update status and need_reparse
                 self._dlm.update_kb_group(cond_file_ids=ids, cond_group=self._kb_group_name,
                                           new_status=DocListManager.Status.working, new_need_reparse=False)
@@ -342,10 +358,15 @@ class DocImpl:
         if not input_files:
             return
         root_nodes = self._reader.load_data(input_files)
-        for idx, node in enumerate(root_nodes):
-            node.global_metadata = metadatas[idx].copy() if metadatas else {}
-            node.global_metadata[RAG_DOC_ID] = ids[idx] if ids else gen_docid(input_files[idx])
-            node.global_metadata[RAG_DOC_PATH] = input_files[idx]
+        map_file_meta = {}
+        if metadatas:
+            for file_path, metadata in zip(input_files, metadatas):
+                map_file_meta[file_path] = metadata
+        for node in root_nodes:
+            file_path = node.global_metadata[RAG_DOC_PATH]
+            if file_path in map_file_meta:
+                node.global_metadata.update(map_file_meta[file_path])
+            node.global_metadata[RAG_DOC_ID] = gen_docid(node.docpath)
         temp_store = self._create_store({"type": "map"})
         temp_store.update_nodes(root_nodes)
         all_groups = self.store.all_groups()
@@ -424,13 +445,45 @@ class DocImpl:
         except Exception as e:
             raise RuntimeError(f'index type `{index}` of store `{type(self.store)}` query failed: {e}')
 
+    def find(self, nodes: List[DocNode], group: str) -> List[DocNode]:
+        if len(nodes) == 0: return nodes
+        self._lazy_init()
+        self._dynamic_create_nodes(group, self.store)
+
+        def get_depth(name):
+            cnt = 0
+            while name != LAZY_ROOT_NAME:
+                cnt += 1
+                name = self.node_groups[name]['parent']
+            return cnt
+
+        # 1. find lowest common ancestor
+        left, right = nodes[0]._group, group
+        curr_depth, target_depth = get_depth(left), get_depth(right)
+        if curr_depth > target_depth:
+            for i in range(curr_depth - target_depth): left = self.node_groups[left]['parent']
+        elif curr_depth < target_depth:
+            for i in range(target_depth - curr_depth): right = self.node_groups[right]['parent']
+        while (left != right):
+            left = self.node_groups[left]['parent']
+            right = self.node_groups[right]['parent']
+        ancestor = left
+
+        # 2. if ancestor != current group, go to ancestor; then if ancestor != target group, go to target group
+        if nodes and nodes[0]._group != ancestor:
+            nodes = DocImpl.find_parent(nodes, ancestor)
+        if nodes and nodes[0]._group != group:
+            nodes = DocImpl.find_children(nodes, group)
+        return nodes
+
     @staticmethod
     def find_parent(nodes: List[DocNode], group: str) -> List[DocNode]:
         def recurse_parents(node: DocNode, visited: Set[DocNode]) -> None:
             if node.parent:
                 if node.parent._group == group:
                     visited.add(node.parent)
-                recurse_parents(node.parent, visited)
+                else:
+                    recurse_parents(node.parent, visited)
 
         result = set()
         for node in nodes:
@@ -466,13 +519,6 @@ class DocImpl:
             if group in node.children:
                 result.update(node.children[group])
             else:
-                LOG.log_once(
-                    f"Fetching children that are not in direct relationship might be slower. "
-                    f"We recommend first fetching through direct children {list(node.children.keys())}, "
-                    f"then using `find_children()` again for deeper levels.",
-                    level="warning",
-                )
-                # Note: the input nodes are the same type
                 if not recurse_children(node, result):
                     LOG.warning(
                         f"Node {node} and its children do not contain any nodes with the group `{group}`. "
@@ -488,10 +534,14 @@ class DocImpl:
         LOG.debug(f"Found children nodes for {group}: {result}")
         return list(result)
 
+    def clear_cache(self, group_names: Optional[List[str]] = None):
+        self.store.clear_cache(group_names)
+
     def __call__(self, func_name: str, *args, **kwargs):
         return getattr(self, func_name)(*args, **kwargs)
 
 
-DocImpl._create_builtin_node_group(name="CoarseChunk", transform=SentenceSplitter, chunk_size=1024, chunk_overlap=100)
-DocImpl._create_builtin_node_group(name="MediumChunk", transform=SentenceSplitter, chunk_size=256, chunk_overlap=25)
-DocImpl._create_builtin_node_group(name="FineChunk", transform=SentenceSplitter, chunk_size=128, chunk_overlap=12)
+for k, v in BuiltinGroups.__dict__.items():
+    if not k.startswith('_') and isinstance(v, BuiltinGroups.Struct):
+        assert k == v.name, 'builtin group name mismatch'
+        DocImpl._create_builtin_node_group(name=k, transform=v.args, parent=v.parent)

@@ -373,7 +373,10 @@ def make_local_llm(base_model: str, target_path: str = '', prompt: str = '', str
     deploy_method = getattr(lazyllm.deploy, deploy_method)
     m = lazyllm.TrainableModule(base_model, target_path, stream=stream, return_trace=return_trace)
     m.prompt(prompt, history=history)
-    m.deploy_method(deploy_method, url=url)
+    if deploy_method is lazyllm.deploy.AutoDeploy:
+        m.deploy_method(deploy_method)
+    else:
+        m.deploy_method(deploy_method, url=url)
     return m
 
 

@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import re
 import shutil
 
 import lazyllm
@@ -127,7 +128,19 @@ class Mindie(LazyLLMDeployBase):
 
     @staticmethod
     def extract_result(x, inputs):
-        return json.loads(x)['text'][0]
+        try:
+            return json.loads(x)['text'][0]
+        except Exception:
+            try:
+                json_strs = re.findall(r'\{.*?\}', x)
+                texts = []
+                for item in json_strs:
+                    obj = json.loads(item)
+                    texts.extend(obj.get("text", []))
+                return "".join(texts)
+            except Exception as e:
+                LOG.warning(f'JSONDecodeError on load {x!r}')
+                raise e
 
     @staticmethod
     def stream_url_suffix():

@@ -1055,12 +1055,16 @@ class EmptyLauncher(LazyLLMLaunchersBase):
         def _wrap_cmd(self, cmd):
             if self.launcher.ngpus == 0:
                 return cmd
+            visible_devices_type = 'CUDA_VISIBLE_DEVICES'
             gpus = self.launcher._get_idle_gpus()
+            if len(gpus) == 0:
+                gpus = self.launcher._get_idle_ascend_npus()
+                visible_devices_type = 'ASCEND_RT_VISIBLE_DEVICES'
             if gpus and lazyllm.config['cuda_visible']:
                 if self.launcher.ngpus is None:
-                    empty_cmd = f'CUDA_VISIBLE_DEVICES={gpus[0]} '
+                    empty_cmd = f'{visible_devices_type}={gpus[0]} '
                 elif self.launcher.ngpus <= len(gpus):
-                    empty_cmd = 'CUDA_VISIBLE_DEVICES=' + \
+                    empty_cmd = f'{visible_devices_type}=' + \
                                 ','.join([str(n) for n in gpus[:self.launcher.ngpus]]) + ' '
                 else:
                     error_info = (f'Not enough GPUs available. Requested {self.launcher.ngpus} GPUs, '
@@ -1136,7 +1140,7 @@ class EmptyLauncher(LazyLLMLaunchersBase):
             )
         except Exception as e:
             LOG.warning(f"Get idle gpus failed: {e}, if you have no gpu-driver, ignor it.")
-            return self._get_idle_ascend_npus()
+            return []
         lines = order_list.strip().split('\n')
 
         str_num = os.getenv('CUDA_VISIBLE_DEVICES', None)

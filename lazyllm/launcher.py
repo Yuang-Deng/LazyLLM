@@ -1059,7 +1059,8 @@ class EmptyLauncher(LazyLLMLaunchersBase):
             gpus = self.launcher._get_idle_gpus()
             if len(gpus) == 0:
                 gpus = self.launcher._get_idle_ascend_npus()
-                visible_devices_type = 'ASCEND_RT_VISIBLE_DEVICES'
+                if "mindie" in cmd:
+                    visible_devices_type = 'ASCEND_RT_VISIBLE_DEVICES'
             if gpus and lazyllm.config['cuda_visible']:
                 if self.launcher.ngpus is None:
                     empty_cmd = f'{visible_devices_type}={gpus[0]} '

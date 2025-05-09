@@ -202,11 +202,11 @@ class BocloudLauncher(LazyLLMLaunchersBase):
     all_processes = defaultdict(list)
 
     class Job(Job):
-        def __init__(self, cmd, launcher, task_type: Literal["train", "fine_tune", "infer"] = "infer", *, sync=True):
+        def __init__(self, cmd, launcher, *, sync=True):
             super(__class__, self).__init__(cmd, launcher, sync=sync)
             self.cmd = cmd
             self.launcher = launcher
-            self.task_type = task_type
+            self.task_type = "infer"
             self.sync = sync
             self.jobid = None
             self.queue = Queue()
@@ -217,6 +217,9 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             self.infer_url = None
 
         def _wrap_cmd(self, cmd):
+            # Determine the task type
+            if "llamafactory-cli" in cmd or "FlagEmbedding.finetune" in cmd:
+                self.task_type = "fine_tune"
             pythonpath = os.getenv("PYTHONPATH", '')
             precmd = (f'''export PYTHONPATH={os.getcwd()}:{pythonpath}:$PYTHONPATH '''
                       f'''&& export PATH={os.path.join(os.path.expanduser('~'), '.local/bin')}:$PATH && ''')
@@ -572,7 +575,6 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         self.api_base_url = api_base_url if api_base_url else config_data["BASE_URL"]
         self.tokens = tokens
         self.resource_configs = resource_configs if resource_configs else config_data['resource_config']
-        self.task_type = task_type if task_type else config_data.get("task_type", "infer")
         self.namespace = namespace if namespace else config_data.get("namespace", "lazyllm")
         self.infer_path = infer_path if infer_path else config_data.get("infer_path", "/generate")
         self.sync = sync
@@ -723,7 +725,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             raise
 
     def makejob(self, cmd):
-        return BocloudLauncher.Job(cmd, self, task_type=self.task_type, sync=self.sync)
+        return BocloudLauncher.Job(cmd, self, sync=self.sync)
 
     def launch(self, f, *args, **kw):
         if isinstance(f, BocloudLauncher.Job):

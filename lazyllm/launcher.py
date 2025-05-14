@@ -91,6 +91,7 @@ lazyllm.config.add('boc_login_name', str, '', 'BOC_LOGIN_NAME')
 lazyllm.config.add('boc_login_passwd', str, '', 'BOC_LOGIN_PASSWD')
 lazyllm.config.add('boc_tenant_name', str, '', 'BOC_TENANT_NAME')
 lazyllm.config.add('boc_project_name', str, '', 'BOC_PROJECT_NAME')
+lazyllm.config.add('boc_ws_retry', int, 0, 'BOC_WS_RETRY')
 
 # store cmd, return message and command output.
 # LazyLLMCMD's post_function can get message form this class.
@@ -247,7 +248,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             elif self.task_type == "fine_tune":
                 url = urljoin(self.launcher.api_base_url, "trainapi/model/train")
                 payload = {
-                    "name": "fine-tune-task",
+                    "name": f"fine-tune-task-{uuid.uuid4().hex[:8]}",
                     "type": "standalone",
                     "frameworkOptions": {
                         "name": "standard",
@@ -294,7 +295,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             elif self.task_type == "infer":
                 url = urljoin(self.launcher.api_base_url, "inferapi/model/infer")
                 payload = {
-                    "name": "infer-task",
+                    "name": f"infer-task-{uuid.uuid4().hex[:8]}",
                     "mode": "standard",
                     "options": {
                         "modelName": "",
@@ -475,7 +476,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             while reconnect_attempts < self.launcher.ws_retry:
                 try:
                     async with websockets.connect(ws_url, extra_headers=headers, ping_interval=30,
-                                                  ping_timeout=300, close_timeout=0) as websocket:
+                                                  ping_timeout=1800, close_timeout=0) as websocket:
                         LOG.info("Connected Log WebSocket")
                         while True:
                             message = await websocket.recv()
@@ -491,8 +492,10 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                     LOG.error(f"Log Connection Exception: {e}")
 
                 reconnect_attempts += 1
-                LOG.info(f"Trying to reconnect, {reconnect_attempts }/{self.launcher.ws_retry} times...")
-                await asyncio.sleep(5)
+                backoff = min(30, 2 ** reconnect_attempts + random.uniform(0, 2))
+                LOG.info(f"Trying to reconnect after {backoff:.1f}s ({reconnect_attempts }/{self.launcher.ws_retry} "
+                         "times...)")
+                await asyncio.sleep(backoff)
 
             self.queue.put(f"ERROR: Bocloud {self.task_type} Service failed to start.")
             LOG.error("Exceeded the maximum number of reconnections, stopped trying to connect.")
@@ -564,12 +567,12 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                  namespace: str = None,
                  sync=True,
                  ngpus=None,
-                 retry=3,
+                 retry=30,
                  infer_path=None,
                  **kwargs):
         super().__init__()
         self.ngpus = ngpus
-        self.ws_retry = retry
+        self.ws_retry = lazyllm.config['boc_ws_retry'] or retry
         config_data = self._read_config_file(lazyllm.config['boc_config_path']) \
             if lazyllm.config['boc_config_path'] else {}
         self.api_base_url = api_base_url if api_base_url else config_data["BASE_URL"]

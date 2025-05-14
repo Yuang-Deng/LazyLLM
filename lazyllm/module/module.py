@@ -20,7 +20,7 @@ from ..components.formatter.formatterbase import LAZYLLM_QUERY_PREFIX, _lazyllm_
 from ..components.utils import ModelManager
 from ..flow import FlowBase, Pipeline, Parallel
 from ..common.bind import _MetaBind
-from ..launcher import LazyLLMLaunchersBase as Launcher
+from ..launcher import LazyLLMLaunchersBase as Launcher, Status
 import uuid
 from ..client import get_redis, redis_client
 from ..hook import LazyLLMHook
@@ -840,6 +840,8 @@ class TrainableModule(UrlModule):
         launcher.cleanup()
 
     def status(self, task_name: Optional[str] = None):
+        if task_name and task_name not in self._impl._launchers['manual']:
+            return Status.Pending
         launcher = self._impl._launchers['manual' if task_name else 'default'][task_name or 'deploy']
         return launcher.status
 

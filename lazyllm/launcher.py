@@ -379,7 +379,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
 
             headers = {"Content-Type": "application/json"}
             headers.update(self.launcher.tokens)
-            response = send_http_request("POST", url, headers=headers, json=payload, log_context=f"Failed to create {self.task_type} task")
+            response = send_http_request("POST", url, headers=headers, json=payload,
+                                         log_context=f"Failed to create {self.task_type} task")
             data = response.json()
             try:
                 self.jobid = data["data"]["id"]
@@ -396,7 +397,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 raise ValueError(f"Unsupported task type: {self.task_type}")
             headers = {"Content-type": "application/json"}
             headers.update(self.launcher.tokens)
-            response = send_http_request("DELETE", url, headers=headers, log_context=f"Failed to delete the {self.task_type} task")
+            response = send_http_request("DELETE", url, headers=headers,
+                                         log_context=f"Failed to delete the {self.task_type} task")
             tid = safe_get(response.json(), "data", "id")
             if tid == self._get_jobid():
                 LOG.info(f"{self.task_type} task {self._get_jobid()} already deleted.")
@@ -413,7 +415,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
 
             headers = {"Content-type": "application/json"}
             headers.update(self.launcher.tokens)
-            response = send_http_request("GET", url, headers=headers, log_context=f"Failed to get {self.task_type} task status")
+            response = send_http_request("GET", url, headers=headers,
+                                         log_context=f"Failed to get {self.task_type} task status")
             state = safe_get(response.json(), "data", "status", "state")
             if state is None: return "Pending"
             return state if isinstance(state, str) else state.get("phase")
@@ -455,7 +458,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             else:
                 params['taskType'] = "infer"
 
-            response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to request train task instance list")
+            response = send_http_request("GET", url, headers=headers, params=params,
+                                         log_context="Failed to request train task instance list")
             ret = safe_get(response.json(), "data", "items")[0]
             pod_name = safe_get(ret, "name")
             containers = [safe_get(item, "name") for item in safe_get(ret, "containers") or []]
@@ -644,7 +648,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         params = {"code": code}
         url = urljoin(self.api_base_url, "upmstreeapi/accessToken")
         headers = {"Content-Type": "application/json"}
-        response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to obtain token request")
+        response = send_http_request("GET", url, headers=headers, params=params,
+                                     log_context="Failed to obtain token request")
         data = response.json()
         return {"Token": safe_get(data, "data", "token"), "Refreshtoken": safe_get(data, "data", "refreshToken")}
 
@@ -666,7 +671,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         url = urljoin(self.api_base_url, "upmstreeapi/projects" if params else "upmstreeapi/projects/list")
         headers = {"Content-type": "application/json"}
         headers.update(token)
-        response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to obtain project ID")
+        response = send_http_request("GET", url, headers=headers, params=params,
+                                     log_context="Failed to obtain project ID")
         data = response.json()
         ret = safe_get(data, "data", "data") if params else safe_get(data, "data")
         for item in ret or []:

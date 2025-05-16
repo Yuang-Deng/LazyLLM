@@ -91,6 +91,8 @@ class TrainServer(ServerBase):
             if info['started_at'] and not info['cost']:
                 cost = (datetime.now() - datetime.strptime(info['started_at'], self._time_format)).total_seconds()
                 self._update_user_job_info(token, job_id, {'cost': cost})
+            update = {"status": "Failed"}
+            self._update_user_job_info(token, job_id, update)
             return
 
         # More than 50 min pop and kill jobs with status: TBSubmitted, InQueue, Pending

@@ -11,6 +11,7 @@ from queue import Queue
 from datetime import datetime
 from multiprocessing.util import register_after_fork
 from collections import defaultdict
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from urllib.parse import urljoin, urlparse, urlencode
 import uuid
 import copy
@@ -92,6 +93,7 @@ lazyllm.config.add('boc_login_passwd', str, '', 'BOC_LOGIN_PASSWD')
 lazyllm.config.add('boc_tenant_name', str, '', 'BOC_TENANT_NAME')
 lazyllm.config.add('boc_project_name', str, '', 'BOC_PROJECT_NAME')
 lazyllm.config.add('boc_ws_retry', int, 0, 'BOC_WS_RETRY')
+lazyllm.config.add('boc_http_retry', int, 0, 'BOC_HTTP_RETRY')
 
 # store cmd, return message and command output.
 # LazyLLMCMD's post_function can get message form this class.
@@ -197,6 +199,40 @@ class Job(object):
     def __deepcopy__(self, memo=None):
         raise RuntimeError('Cannot copy Job object')
 
+@retry(
+    stop=stop_after_attempt(lazyllm.config['boc_http_retry'] or 3),
+    wait=wait_exponential_jitter(exp_base=2, max=30),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
+def send_http_request(method, url, *, headers=None, data=None, json=None, params=None, timeout=10, log_context=""):
+    method = method.lower()
+    session = requests.Session()
+    request_func = getattr(session, method, None)
+    if not request_func:
+        raise ValueError(f"Unsupported HTTP method: {method}")
+
+    try:
+        response = request_func(
+            url,
+            headers=headers,
+            data=data,
+            json=json,
+            params=params,
+            timeout=timeout
+        )
+        if not response.ok:
+            raise requests.exceptions.HTTPError(f"HTTP Error: {response.status_code}", response=response)
+        return response
+    except requests.exceptions.RequestException as e:
+        LOG.error(f"{f'[{log_context}] --- ' if log_context else ''}Request failed: {e}")
+        raise
+
+def safe_get(d, *keys):
+    for key in keys:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(key)
+    return d
 
 @final
 class BocloudLauncher(LazyLLMLaunchersBase):
@@ -343,18 +379,13 @@ class BocloudLauncher(LazyLLMLaunchersBase):
 
             headers = {"Content-Type": "application/json"}
             headers.update(self.launcher.tokens)
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-
-            if response.status_code == 200:
-                data = response.json()
-                try:
-                    self.jobid = data["data"]["id"]
-                    LOG.info(f"{self.task_type.capitalize()} task created with ID: {self.jobid}")
-                except TypeError:
-                    raise ValueError(data.get("message"))
-            else:
-                raise RuntimeError(f"Failed to create {self.task_type} task: {response.text}")
+            response = send_http_request("POST", url, headers=headers, json=payload, log_context=f"Failed to create {self.task_type} task")
+            data = response.json()
+            try:
+                self.jobid = data["data"]["id"]
+                LOG.info(f"{self.task_type.capitalize()} task created with ID: {self.jobid}")
+            except TypeError:
+                raise ValueError(data.get("message"))
 
         def _stop_task(self):
             if self.task_type in ["train", "fine_tune"]:
@@ -365,18 +396,12 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 raise ValueError(f"Unsupported task type: {self.task_type}")
             headers = {"Content-type": "application/json"}
             headers.update(self.launcher.tokens)
-            try:
-                response = requests.delete(url=url, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                tid = data.get("data", {}).get("id")
-                if tid == self._get_jobid():
-                    LOG.info(f"{self.task_type} task {self._get_jobid()} already deleted.")
-                else:
-                    raise ValueError(f"The deleted {self.task_type} task is {tid} instead of {self._get_jobid}")
-            except requests.exceptions.RequestException as e:
-                LOG.error(f"Failed to delete the {self.task_type} task: {e}")
-                raise
+            response = send_http_request("DELETE", url, headers=headers, log_context=f"Failed to delete the {self.task_type} task")
+            tid = safe_get(response.json(), "data", "id")
+            if tid == self._get_jobid():
+                LOG.info(f"{self.task_type} task {self._get_jobid()} already deleted.")
+            else:
+                raise ValueError(f"The deleted {self.task_type} task is {tid} instead of {self._get_jobid()}")
 
         def _get_task_status(self):
             if self.task_type in ["train", "fine_tune"]:
@@ -388,12 +413,10 @@ class BocloudLauncher(LazyLLMLaunchersBase):
 
             headers = {"Content-type": "application/json"}
             headers.update(self.launcher.tokens)
-            response = requests.get(url=url, headers=headers)
-            if response.status_code == 200:
-                state = response.json().get("data", {}).get("status", {}).get("state")
-                return state if isinstance(state, str) else state.get("phase")
-            else:
-                raise RuntimeError(f"Failed to get {self.task_type} task status: {response.text}")
+            response = send_http_request("GET", url, headers=headers, log_context=f"Failed to get {self.task_type} task status")
+            state = safe_get(response.json(), "data", "status", "state")
+            if state is None: return "Pending"
+            return state if isinstance(state, str) else state.get("phase")
 
         def _requestTaskDetails(self):
             if self.task_type in ["train", "fine_tune"]:
@@ -404,27 +427,22 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 raise ValueError(f"Unsupported task type: {self.task_type}")
             headers = {"Content-type": "application/json"}
             headers.update(self.launcher.tokens)
-            try:
-                response = requests.get(url=url, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                if data.get("code") == 200:
-                    if self.task_type in ["train", "fine_tune"]:
-                        ret = data.get("data", {}).get("status", {})
-                        cluster_name = ret.get("job", {}).get("cluster", {}).get("name")
-                        project_namespace = ret.get("job", {}).get("namespace")
-                    else:
-                        ret = data.get("data", {})
-                        cluster_name = ret.get("clusterName")
-                        project_namespace = ret.get("projectNamespace")
-                        url = ret.get("url")
-                        self.infer_url = f"{self.base_url}{url}"
-                    return (cluster_name, project_namespace)
+            response = send_http_request("GET", url, headers=headers, log_context="Failed to request train task details")
+            data = response.json()
+            if data.get("code") == 200:
+                if self.task_type in ["train", "fine_tune"]:
+                    ret = safe_get(data, "data", "status")
+                    cluster_name = safe_get(ret, "job", "cluster", "name")
+                    project_namespace = safe_get(ret, "job", "namespace")
                 else:
-                    raise ValueError(f"Request failed: {data}")
-            except requests.exceptions.RequestException as e:
-                LOG.error(f"Failed to request train task details: {e}")
-                raise
+                    ret = safe_get(data, "data")
+                    cluster_name = safe_get(ret, "clusterName")
+                    project_namespace = safe_get(ret, "projectNamespace")
+                    url = safe_get(ret, "url")
+                    self.infer_url = f"{self.base_url}{url}"
+                return (cluster_name, project_namespace)
+            else:
+                raise ValueError(f"Request failed: {data}")
 
         def _getTaskInstanceList(self):
             url = urljoin(self.launcher.api_base_url, "commonserverapi/common/tasks/instances")
@@ -436,17 +454,12 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 params["taskType"] = "train"
             else:
                 params['taskType'] = "infer"
-            try:
-                response = requests.get(url=url, headers=headers, params=params)
-                response.raise_for_status()
-                data = response.json()
-                ret = data.get("data", {}).get("items", [])[0]
-                pod_name = ret.get("name")
-                containers = [item.get("name") for item in ret.get("containers")]
-                return (names[0], names[1], pod_name, containers)
-            except requests.exceptions.RequestException as e:
-                LOG.error(f"Failed to request train task instance list: {e}")
-                raise
+
+            response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to request train task instance list")
+            ret = safe_get(response.json(), "data", "items")[0]
+            pod_name = safe_get(ret, "name")
+            containers = [safe_get(item, "name") for item in safe_get(ret, "containers") or []]
+            return (names[0], names[1], pod_name, containers)
 
         async def _fetch_logs(self):
             ret = self._getTaskInstanceList()
@@ -623,46 +636,29 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         data = {"typeConfigId": 0, "userName": name, "password": encode_str,
                 "clientId": "be2030fc2aa0416d8c9dcaa5081fb1ad", "multfactor": "Y"}
         url = urljoin(self.api_base_url, "upmstreeapi/login")
-        try:
-            response = requests.post(url=url, headers=headers, json=data)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data", {}).get("code")
-        except requests.exceptions.RequestException as e:
-            LOG.error(f"Login request failed: {e}")
-            raise
+        response = send_http_request("POST", url, headers=headers, json=data, log_context="Login request failed")
+        return safe_get(response.json(), "data", "code")
 
     def _accessToken(self):
         code = self._login()
         params = {"code": code}
         url = urljoin(self.api_base_url, "upmstreeapi/accessToken")
         headers = {"Content-Type": "application/json"}
-        try:
-            response = requests.get(url=url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-            return {"Token": data.get("data", {}).get("token"), "Refreshtoken": data.get("data", {}).get("refreshToken")}
-        except requests.exceptions.RequestException as e:
-            LOG.error(f"Failed to obtain token request: {e}")
-            raise
+        response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to obtain token request")
+        data = response.json()
+        return {"Token": safe_get(data, "data", "token"), "Refreshtoken": safe_get(data, "data", "refreshToken")}
 
     def _getTenantId(self, token: Dict[str, str]):
         tenantName = lazyllm.config['boc_tenant_name']
         headers = {"Content-Type": "application/json"}
         headers.update(token)
         url = urljoin(self.api_base_url, "upmstreeapi/tenants/account")
-        try:
-            response = requests.get(url=url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            ret = data.get("data", [])
-            for item in ret:
-                if item.get("name") == tenantName:
-                    return str(item.get("id"))
-            raise ValueError(f"The tenant ID with tenant name {tenantName} was not found.")
-        except requests.exceptions.RequestException as e:
-            LOG.error(f"Failed to obtain tenant id: {e}")
-            raise
+        response = send_http_request("GET", url, headers=headers, log_context="Failed to obtain tenant id")
+        ret = safe_get(response.json(), "data")
+        for item in ret or []:
+            if safe_get(item, "name") == tenantName:
+                return str(safe_get(item, "id"))
+        raise ValueError(f"The tenant ID with tenant name {tenantName} was not found.")
 
     def _getProjectId(self, token: Dict[str, str], proConfig: Optional[Dict[str, str | int]] = None):
         projectName = lazyllm.config['boc_project_name']
@@ -670,62 +666,52 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         url = urljoin(self.api_base_url, "upmstreeapi/projects" if params else "upmstreeapi/projects/list")
         headers = {"Content-type": "application/json"}
         headers.update(token)
-        try:
-            response = requests.get(url=url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-            ret = data.get("data", {}).get("data", {}) if params else data.get("data")
-            for item in ret:
-                if item.get("projectName") == projectName:
-                    return str(item.get("projectId"))
-            raise ValueError(f"No project ID found for project named {projectName}")
-        except requests.exceptions.RequestException as e:
-            LOG.error(f"Failed to obtain project ID: {e}")
-            raise
+        response = send_http_request("GET", url, headers=headers, params=params, log_context="Failed to obtain project ID")
+        data = response.json()
+        ret = safe_get(data, "data", "data") if params else safe_get(data, "data")
+        for item in ret or []:
+            if safe_get(item, "projectName") == projectName:
+                return str(safe_get(item, "projectId"))
+        raise ValueError(f"No project ID found for project named {projectName}")
 
     def _getResourceSpecByProject(self, token: Dict[str, str], group_name: str = None, spec_name: str = None):
         headers = {"Content-type": "application/json"}
         headers.update(token)
         url = urljoin(self.api_base_url, f"upmstreeapi/projects/{token.get('projectId')}")
-        try:
-            response = requests.get(url=url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            LOG.info(f"Resource Group Id and SpecId: {data}")
-            resGroup = data.get("data", {}).get("resourceGroup", [])
-            if group_name:
-                group = next((g for g in resGroup if g["name"] == group_name), None)
-                group_id = group['id'] if group else None
-                if group_id is None:
-                    raise ValueError(f"The specified resource group name {group_name} was not found "
-                                     f"in the resource group {resGroup}")
-            else:
-                group_id = random.choice(resGroup)['id'] if resGroup else None
-                if group_id is None:
-                    raise ValueError(f"No valid resource group: {resGroup}")
+        response = send_http_request("GET", url, headers=headers, log_context="Failed to obtain resource")
+        data = response.json()
+        LOG.info(f"Resource Group Id and SpecId: {data}")
+        resGroup = safe_get(data, "data", "resourceGroup") or []
+        if group_name:
+            group = next((g for g in resGroup if g["name"] == group_name), None)
+            group_id = group['id'] if group else None
+            if group_id is None:
+                raise ValueError(f"The specified resource group name {group_name} was not found "
+                                 f"in the resource group {resGroup}")
+        else:
+            group_id = random.choice(resGroup)['id'] if resGroup else None
+            if group_id is None:
+                raise ValueError(f"No valid resource group: {resGroup}")
 
-            resSpec = data.get("data", {}).get("resourceSpec", [])
-            if spec_name:
-                spec = next((s for s in resSpec if s['name'] == spec_name), None)
-                spec_id = spec['quotaId'] if spec else None
-                if spec_id is None:
-                    raise ValueError(f"The specified resource spec name {spec_name} was not found "
-                                     f"in the resource spec {resSpec}")
+        resSpec = safe_get(data, "data", "resourceSpec") or []
+        if spec_name:
+            spec = next((s for s in resSpec if s['name'] == spec_name), None)
+            spec_id = spec['quotaId'] if spec else None
+            if spec_id is None:
+                raise ValueError(f"The specified resource spec name {spec_name} was not found "
+                                 f"in the resource spec {resSpec}")
+        else:
+            gpu_specs = [
+                s for s in resSpec if s['specType'] == "gpu" and s['useNum'] < s['totalNum']
+            ]
+            if gpu_specs:
+                # Sort by useNum in ascending order, with the least busy first
+                spec = sorted(gpu_specs, key=lambda s: s['useNum'])[0]
+                spec_id = spec['quotaId']
             else:
-                gpu_specs = [
-                    s for s in resSpec if s['specType'] == "gpu" and s['useNum'] < s['totalNum']
-                ]
-                if gpu_specs:
-                    # Sort by useNum in ascending order, with the least busy first
-                    spec = sorted(gpu_specs, key=lambda s: s['useNum'])[0]
-                    spec_id = spec['quotaId']
-                else:
-                    raise ValueError(f"No idle resource spec were found for the gpu: {resSpec}")
+                raise ValueError(f"No idle resource spec were found for the gpu: {resSpec}")
 
-            return group_id, spec_id
-        except requests.exceptions.RequestException as e:
-            LOG.error(f"Failed to obtain resource: {e}")
-            raise
+        return group_id, spec_id
 
     def makejob(self, cmd):
         return BocloudLauncher.Job(cmd, self, sync=self.sync)

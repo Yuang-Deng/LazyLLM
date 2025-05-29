@@ -143,7 +143,7 @@ class InferServer(ServerBase):
         save_root = os.path.join(lazyllm.config['infer_log_root'], token, job_id)
         os.makedirs(save_root, exist_ok=True)
         hypram = dict(launcher=lazyllm.launchers.remote(sync=False, ngpus=job.num_gpus), log_path=save_root)
-        m = lazyllm.TrainableModule(job.deploy_model).deploy_method((lazyllm.deploy.auto, hypram))
+        m = lazyllm.TrainableModule(job.deploy_model).deploy_method((lazyllm.deploy.mindie, hypram))
 
         # Launch Deploy:
         thread = threading.Thread(target=m.start)

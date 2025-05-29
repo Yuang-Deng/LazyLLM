@@ -1604,12 +1604,17 @@ class EmptyLauncher(LazyLLMLaunchersBase):
         def _wrap_cmd(self, cmd):
             if self.launcher.ngpus == 0:
                 return cmd
+            visible_devices_type = 'CUDA_VISIBLE_DEVICES'
             gpus = self.launcher._get_idle_gpus()
+            if len(gpus) == 0:
+                gpus = self.launcher._get_idle_ascend_npus()
+                if "mindie" in cmd:
+                    visible_devices_type = 'ASCEND_RT_VISIBLE_DEVICES'
             if gpus and lazyllm.config['cuda_visible']:
                 if self.launcher.ngpus is None:
-                    empty_cmd = f'CUDA_VISIBLE_DEVICES={gpus[0]} '
+                    empty_cmd = f'{visible_devices_type}={gpus[0]} '
                 elif self.launcher.ngpus <= len(gpus):
-                    empty_cmd = 'CUDA_VISIBLE_DEVICES=' + \
+                    empty_cmd = f'{visible_devices_type}=' + \
                                 ','.join([str(n) for n in gpus[:self.launcher.ngpus]]) + ' '
                 else:
                     error_info = (f'Not enough GPUs available. Requested {self.launcher.ngpus} GPUs, '
@@ -1700,6 +1705,57 @@ class EmptyLauncher(LazyLLMLaunchersBase):
         gpu_info.sort(key=lambda x: x[1], reverse=True)
         LOG.info('Memory left:\n' + '\n'.join([f'{item[0]} GPU, left: {item[1]} MiB' for item in gpu_info]))
         return [info[0] for info in gpu_info]
+
+    def _get_idle_ascend_npus(self):
+        try:
+            # Get the IDs of all NPUs
+            order_list = subprocess.check_output(
+                ['npu-smi', 'info', '-l'],
+                encoding='utf-8'
+            )
+        except Exception as e:
+            LOG.warning(f"Get NPU list failed: {e}")
+            return []
+
+        lines = order_list.strip().split('\n')
+        npus = [int(line.split(':')[1].strip()) for line in lines if 'NPU ID' in line]
+
+        npu_info = []
+
+        # Traverse each NPU ID and query its memory usage
+        for npu_id in npus:
+            try:
+                # 获取每个 NPU 的内存使用情况
+                usage_info = subprocess.check_output(
+                    ['npu-smi', 'info', '-t', 'usages', '-i', str(npu_id)],
+                    encoding='utf-8'
+                )
+            except Exception as e:
+                LOG.warning(f"Get NPU {npu_id} memory usage failed: {e}")
+                continue
+
+            # Analyzing NPU memory usage
+            usage_lines = usage_info.strip().split('\n')
+            hbm_capacity = None
+            hbm_usage = None
+
+            for line in usage_lines:
+                if 'HBM Capacity' in line:
+                    hbm_capacity = int(line.split(':')[1].strip().split()[0])
+                if 'HBM Usage Rate' in line:
+                    hbm_usage = int(line.split(':')[1].strip().split()[0])
+
+            if hbm_capacity is not None and hbm_usage is not None:
+                # Calculating free memory
+                free_memory = hbm_capacity * (100 - hbm_usage) / 100
+                npu_info.append((npu_id, int(free_memory)))
+
+        # Sort by free memory from largest to smallest
+        npu_info.sort(key=lambda x: x[1], reverse=True)
+
+        LOG.info('Memory left:\n' + '\n'.join([f'NPU {item[0]}, left: {item[1]} MB' for item in npu_info]))
+
+        return [info[0] for info in npu_info]
 
 @final
 class SlurmLauncher(LazyLLMLaunchersBase):

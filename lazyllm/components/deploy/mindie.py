@@ -74,6 +74,16 @@ class Mindie(LazyLLMDeployBase):
         with open(self.mindie_config_path, 'w') as file:
             json.dump(self.config_dict, file)
 
+    def generate_remote_command(self):
+        config_json = json.dumps(self.config_dict)
+        # Escape double quotes to avoid shell issues
+        escaped_config = config_json.replace('"', '\\"')
+        cmd = (
+            f'[ -f {self.mindie_config_path} ] && cp {self.mindie_config_path} {self.backup_path} ; '
+            f'echo "{escaped_config}" > {self.mindie_config_path} ; '
+        )
+        return cmd
+
     def update_config(self):
         backend_config = self.config_dict["BackendConfig"]
         backend_config["npuDeviceIds"] = self.kw["npuDeviceIds"]
@@ -108,10 +118,11 @@ class Mindie(LazyLLMDeployBase):
 
             self.update_config()
 
-        self.save_config()
+        # self.save_config()
 
         def impl():
-            cmd = f'{os.path.join(self.mindie_home, "mindie-service/bin/mindieservice_daemon")}'
+            config_cmd = self.generate_remote_command()
+            cmd = config_cmd + f'{os.path.join(self.mindie_home, "mindie-service/bin/mindieservice_daemon")}'
             if self.temp_folder: cmd += f' 2>&1 | tee {get_log_path(self.temp_folder)}'
             return cmd
 

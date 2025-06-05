@@ -123,6 +123,7 @@ class Mindie(LazyLLMDeployBase):
         def impl():
             config_cmd = self.generate_remote_command()
             cmd = config_cmd + f'{os.path.join(self.mindie_home, "mindie-service/bin/mindieservice_daemon")}'
+            cmd += f" --port={self.kw['port']}"
             if self.temp_folder: cmd += f' 2>&1 | tee {get_log_path(self.temp_folder)}'
             return cmd
 

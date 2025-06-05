@@ -11,7 +11,7 @@ from queue import Queue
 from datetime import datetime
 from multiprocessing.util import register_after_fork
 from collections import defaultdict
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type, wait_fixed
 from urllib.parse import urljoin, urlparse, urlencode
 import uuid
 import copy
@@ -447,6 +447,38 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             else:
                 raise ValueError(f"Request failed: {data}")
 
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_fixed(2),
+            retry=retry_if_exception_type((requests.RequestException, RuntimeError))
+        )
+        def _check_job_exists(self):
+            if self.task_type in ["train", "fine_tune"]:
+                url = urljoin(self.launcher.api_base_url, f"trainapi/model/train/{self._get_jobid()}")
+            elif self.task_type == "infer":
+                url = urljoin(self.launcher.api_base_url, f"inferapi/model/infer/{self._get_jobid()}")
+            else:
+                raise ValueError(f"Unsupported task type: {self.task_type}")
+            headers = {"Content-type": "application/json"}
+            headers.update(self.launcher.tokens)
+            try:
+                response = requests.get(url, headers=headers, timeout=5)
+            except requests.RequestException as e:
+                raise RuntimeError("Network error when trying to request job info") from e
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Non-200 response: {response.status_code}")
+
+            try:
+                data = response.json()
+            except ValueError:
+                raise RuntimeError("Invalid JSON response")
+
+            if data.get('code') == 200:
+                return True
+            else:
+                return False
+
         def _getTaskInstanceList(self):
             url = urljoin(self.launcher.api_base_url, "commonserverapi/common/tasks/instances")
             headers = {"Content-type": "application/json"}
@@ -490,7 +522,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             ws_url = f"ws://{self.parsed_url.hostname}:{self.parsed_url.port}/aios/common/tasks/logs?{query}"
             LOG.info(f"url: {ws_url}")
             reconnect_attempts = 0
-            while reconnect_attempts < self.launcher.ws_retry:
+            while self._check_job_exists() and reconnect_attempts < self.launcher.ws_retry:
                 try:
                     async with websockets.connect(ws_url, extra_headers=headers, ping_interval=30,
                                                   ping_timeout=1800, close_timeout=0) as websocket:
@@ -514,8 +546,9 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                          "times...)")
                 await asyncio.sleep(backoff)
 
-            self.queue.put(f"ERROR: Bocloud {self.task_type} Service failed to start.")
-            LOG.error("Exceeded the maximum number of reconnections, stopped trying to connect.")
+            if self._check_job_exists():
+                self.queue.put(f"ERROR: Bocloud {self.task_type} Service failed to start.")
+                LOG.error("Exceeded the maximum number of reconnections, stopped trying to connect.")
 
         def _start(self, *, fixed=False):
             cmd = self.get_executable_cmd(fixed=fixed)
@@ -563,9 +596,9 @@ class BocloudLauncher(LazyLLMLaunchersBase):
 
         def wait(self):
             n = 0
-            while self.status == Status.Pending:
+            while self._check_job_exists() and self.status == Status.Pending:
+                LOG.info(f"jobid: {self.jobid}, status: {self.status}")
                 time.sleep(2)
-                LOG.info(f"status: {self.status}")
                 n += 1
                 if n > 1800:  # 3600s
                     LOG.error('Launch failed: No computing resources are available.')

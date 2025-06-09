@@ -307,7 +307,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                             "imagePullPolicy": "IfNotPresent"
                         }
                     ],
-                    "shmSize": 512,
+                    "shmSize": self.launcher.shm_size,
                     "envs": [],
                     "command": cmd + ';echo "Done"',
                     "ports": [8888, 9999],
@@ -358,7 +358,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                     "resourceGroupId": self.launcher.resource_configs["resourceGroupId"],
                     "resourceSpecId": int(self.launcher.resource_configs["resourceSpecId"]),
                     "projectId": int(self.launcher.tokens.get("projectId")),
-                    "shmSize": 512,
+                    "shmSize": self.launcher.shm_size,
                     "port": self.deployment_port,
                     "envs": [],
                     "image": self.launcher.resource_configs['image'],
@@ -631,6 +631,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         self.namespace = namespace if namespace else config_data.get("namespace", "lazyllm")
         self.infer_path = infer_path if infer_path else config_data.get("infer_path", "/generate")
         self.sync = sync
+        self.shm_size = 512
 
     def _auth_and_get_resource(self):
         token = self._accessToken()
@@ -640,16 +641,17 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         token["projectId"] = pId
         self.tokens = self.tokens if self.tokens else token
 
-        if "resourceGroupId" not in self.resource_configs or "resourceSpecId" not in self.resource_configs:
-            resourceGroupId, specId = self._getResourceSpecByProject(
-                self.tokens,
-                self.resource_configs.get("resourceGroupName", None),
-                self.resource_configs.get("resourceSpecName", None)
-            )
-            if "resourceGroupId" not in self.resource_configs:
-                self.resource_configs["resourceGroupId"] = resourceGroupId
-            if "resourceSpecId" not in self.resource_configs:
-                self.resource_configs['resourceSpecId'] = specId
+        resourceGroupId, specId = self._getResourceSpecByProject(
+            self.tokens,
+            self.resource_configs.get("resourceGroupName", None),
+            self.resource_configs.get("resourceGroupId", None),
+            self.resource_configs.get("resourceSpecName", None),
+            self.resource_configs.get("resourceSpecId", None)
+        )
+        if "resourceGroupId" not in self.resource_configs:
+            self.resource_configs["resourceGroupId"] = resourceGroupId
+        if "resourceSpecId" not in self.resource_configs:
+            self.resource_configs['resourceSpecId'] = specId
         LOG.info(f"resource_configs: {self.resource_configs}")
 
     def _read_config_file(self, file_path):
@@ -713,7 +715,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 return str(safe_get(item, "projectId"))
         raise ValueError(f"No project ID found for project named {projectName}")
 
-    def _getResourceSpecByProject(self, token: Dict[str, str], group_name: str = None, spec_name: str = None):
+    def _getResourceSpecByProject(self, token: Dict[str, str], group_name: str = None, resGroup_id: str = None,
+                                  spec_name: str = None, resSpec_id: int = None):
         headers = {"Content-type": "application/json"}
         headers.update(token)
         url = urljoin(self.api_base_url, f"upmstreeapi/projects/{token.get('projectId')}")
@@ -727,6 +730,12 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             if group_id is None:
                 raise ValueError(f"The specified resource group name {group_name} was not found "
                                  f"in the resource group {resGroup}")
+        elif resGroup_id:
+            group = next((g for g in resGroup if g["id"] == resGroup_id), None)
+            group_id = group['id'] if group else None
+            if group_id is None:
+                raise ValueError(f"The specified resource group id {resGroup_id} was not found "
+                                 f"in the resource group {resGroup}")
         else:
             group_id = random.choice(resGroup)['id'] if resGroup else None
             if group_id is None:
@@ -736,8 +745,17 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         if spec_name:
             spec = next((s for s in resSpec if s['name'] == spec_name), None)
             spec_id = spec['quotaId'] if spec else None
+            self.shm_size = (spec['memory'] * 1024) // 2 if spec else 512
             if spec_id is None:
                 raise ValueError(f"The specified resource spec name {spec_name} was not found "
+                                 f"in the resource spec {resSpec}")
+        elif resSpec_id:
+            resSpec_id = int(resSpec_id)
+            spec = next((s for s in resSpec if s['quotaId'] == resSpec_id), None)
+            spec_id = spec['quotaId'] if spec else None
+            self.shm_size = (spec['memory'] * 1024) // 2 if spec else 512
+            if spec_id is None:
+                raise ValueError(f"The specified resource spec id {resSpec_id} was not found "
                                  f"in the resource spec {resSpec}")
         else:
             gpu_specs = [
@@ -747,6 +765,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                 # Sort by useNum in ascending order, with the least busy first
                 spec = sorted(gpu_specs, key=lambda s: s['useNum'])[0]
                 spec_id = spec['quotaId']
+                self.shm_size = (spec['memory'] * 1024) // 2 if spec else 512
             else:
                 raise ValueError(f"No idle resource spec were found for the gpu: {resSpec}")
 

@@ -262,6 +262,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                       f'''&& export PATH={os.path.join(os.path.expanduser('~'), '.local/bin')}:$PATH && ''')
             if lazyllm.config['boc_env_name']:
                 precmd = f"source activate {lazyllm.config['boc_env_name']} && " + precmd
+            if self.launcher.env_vars_config_path:
+                precmd = f"source {self.launcher.env_vars_config_path} && " + precmd
             env_vars = os.environ
             lazyllm_vars = {k: v for k, v in env_vars.items() if k.startswith("LAZYLLM")}
             if lazyllm_vars:
@@ -619,6 +621,7 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                  ngpus=None,
                  retry=30,
                  infer_path=None,
+                 env_vars_config_path=None,
                  **kwargs):
         super().__init__()
         self.ngpus = ngpus
@@ -630,6 +633,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         self.resource_configs = resource_configs if resource_configs else config_data['resource_config']
         self.namespace = namespace if namespace else config_data.get("namespace", "lazyllm")
         self.infer_path = infer_path if infer_path else config_data.get("infer_path", "/generate")
+        self.env_vars_config_path = env_vars_config_path if env_vars_config_path else \
+            config_data.get("ENV_VARS_CONFIG_PATH", None)
         self.sync = sync
         self.shm_size = 512
 

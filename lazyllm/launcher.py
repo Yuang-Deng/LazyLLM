@@ -94,6 +94,7 @@ lazyllm.config.add('boc_tenant_name', str, '', 'BOC_TENANT_NAME')
 lazyllm.config.add('boc_project_name', str, '', 'BOC_PROJECT_NAME')
 lazyllm.config.add('boc_ws_retry', int, 0, 'BOC_WS_RETRY')
 lazyllm.config.add('boc_http_retry', int, 0, 'BOC_HTTP_RETRY')
+lazyllm.config.add('boc_internal_url', bool, True, 'BOC_INTERNAL_URL')
 
 # store cmd, return message and command output.
 # LazyLLMCMD's post_function can get message form this class.
@@ -443,8 +444,11 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                     ret = safe_get(data, "data")
                     cluster_name = safe_get(ret, "clusterName")
                     project_namespace = safe_get(ret, "projectNamespace")
-                    url = safe_get(ret, "url")
-                    self.infer_url = f"{self.base_url}{url}"
+                    if lazyllm.config['boc_internal_url']:
+                        self.infer_url = safe_get(ret, "internalUrl")
+                    else:
+                        url = safe_get(ret, "url")
+                        self.infer_url = f"{self.base_url}{url}"
                 return (cluster_name, project_namespace)
             else:
                 raise ValueError(f"Request failed: {data}")

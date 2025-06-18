@@ -1,5 +1,7 @@
 ### ModelArguments
 model_name_or_path: internlm2-chat-7b
+model_args:
+  trust_remote_code: true
 adapter_name_or_path: null
 adapter_folder: null
 cache_dir: null
@@ -268,5 +270,3 @@ max_new_tokens: 1024
 repetition_penalty: 1.0
 length_penalty: 1.0
 default_system: null
-model_args:
-  trust_remote_code: true

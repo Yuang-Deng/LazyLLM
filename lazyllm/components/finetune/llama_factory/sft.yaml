@@ -268,4 +268,5 @@ max_new_tokens: 1024
 repetition_penalty: 1.0
 length_penalty: 1.0
 default_system: null
-trust_remote_code: true
+model_args:
+  trust_remote_code: true

@@ -1,7 +1,6 @@
 ### ModelArguments
 model_name_or_path: internlm2-chat-7b
-model_args:
-  trust_remote_code: true
+trust_remote_code: true
 adapter_name_or_path: null
 adapter_folder: null
 cache_dir: null

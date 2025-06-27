@@ -3,6 +3,8 @@ import json
 import random
 import re
 import shutil
+import ipaddress
+from urllib.parse import urlparse
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG
@@ -135,8 +137,19 @@ class Mindie(LazyLLMDeployBase):
         if lazyllm.config['mode'] == lazyllm.Mode.Display:
             return f'http://{job.get_jobip()}:{self.kw["port"]}/generate'
         else:
-            LOG.info(f"MindIE Server running on http://{job.get_jobip()}:{self.kw['port']}")
-            return f'http://{job.get_jobip()}:{self.kw["port"]}/generate'
+            ip_or_url = job.get_jobip()
+            try:
+                ipaddress.ip_address(ip_or_url)
+                LOG.info(f"MindIE Server running on http://{ip_or_url}:{self.kw['port']}")
+                return f'http://{ip_or_url}:{self.kw["port"]}/generate'
+            except ValueError:
+                pass
+
+            parsed = urlparse(ip_or_url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                return ip_or_url + "/generate"
+
+            raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
 
     @staticmethod
     def extract_result(x, inputs):

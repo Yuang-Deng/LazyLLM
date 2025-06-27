@@ -538,7 +538,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                             if self.task_type in ["train", "fine_tune"] and message.strip() == "Done":
                                 return
                             LOG.info(message)
-                            if self.task_type == "infer" and "Press CTRL+C to quit" in message:
+                            if self.task_type == "infer" and \
+                               ("Press CTRL+C to quit" in message or "Daemon start success" in message):
                                 self.queue.put(f"Uvicorn running on {self.infer_url}")
                                 return
                 except websockets.exceptions.ConnectionClosed as e:

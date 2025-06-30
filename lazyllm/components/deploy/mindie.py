@@ -84,6 +84,7 @@ class Mindie(LazyLLMDeployBase):
             f'[ -f {self.mindie_config_path} ] && cp {self.mindie_config_path} {self.backup_path} ; '
             f'echo "{escaped_config}" > {self.mindie_config_path} ; '
         )
+        if self.temp_folder: cmd += f"mkdir -p {self.temp_folder} ; "
         return cmd
 
     def update_config(self):

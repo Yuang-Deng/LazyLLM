@@ -1,3 +1,9 @@
+try:
+    import torch  # noqa: F401
+    import torch_npu  # noqa: F401
+    from torch_npu.contrib import transfer_to_npu  # noqa: F401
+except Exception as e:  # noqa: F841
+    pass
 import cloudpickle
 import uvicorn
 import argparse

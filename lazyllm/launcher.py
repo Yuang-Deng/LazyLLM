@@ -297,8 +297,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                             "port": 2222
                         }
                     },
-                    "resourceGroupId": self.launcher.resource_configs["resourceGroupId"],
-                    "resourceSpecId": int(self.launcher.resource_configs["resourceSpecId"]),
+                    "resourceGroupId": self.launcher.resource_configs["train_resourceGroupId"],
+                    "resourceSpecId": int(self.launcher.resource_configs["train_resourceSpecId"]),
                     "projectId": int(self.launcher.tokens.get("projectId")),
                     "rdma": False,
                     "tasks": [
@@ -358,8 +358,8 @@ class BocloudLauncher(LazyLLMLaunchersBase):
                     "terminate": False,
                     "modelSource": 1,
                     "imageSource": 2,
-                    "resourceGroupId": self.launcher.resource_configs["resourceGroupId"],
-                    "resourceSpecId": int(self.launcher.resource_configs["resourceSpecId"]),
+                    "resourceGroupId": self.launcher.resource_configs["infer_resourceGroupId"],
+                    "resourceSpecId": int(self.launcher.resource_configs["infer_resourceSpecId"]),
                     "projectId": int(self.launcher.tokens.get("projectId")),
                     "shmSize": self.launcher.shm_size,
                     "port": self.deployment_port,
@@ -651,17 +651,32 @@ class BocloudLauncher(LazyLLMLaunchersBase):
         token["projectId"] = pId
         self.tokens = self.tokens if self.tokens else token
 
+        # infer
         resourceGroupId, specId = self._getResourceSpecByProject(
             self.tokens,
-            self.resource_configs.get("resourceGroupName", None),
-            self.resource_configs.get("resourceGroupId", None),
-            self.resource_configs.get("resourceSpecName", None),
-            self.resource_configs.get("resourceSpecId", None)
+            self.resource_configs.get("infer_resourceGroupName", None),
+            self.resource_configs.get("infer_resourceGroupId", None),
+            self.resource_configs.get("infer_resourceSpecName", None),
+            self.resource_configs.get("infer_resourceSpecId", None)
         )
-        if "resourceGroupId" not in self.resource_configs:
-            self.resource_configs["resourceGroupId"] = resourceGroupId
-        if "resourceSpecId" not in self.resource_configs:
-            self.resource_configs['resourceSpecId'] = specId
+        if "infer_resourceGroupId" not in self.resource_configs:
+            self.resource_configs["infer_resourceGroupId"] = resourceGroupId
+        if "infer_resourceSpecId" not in self.resource_configs:
+            self.resource_configs['infer_resourceSpecId'] = specId
+
+        # train
+        resourceGroupId, specId = self._getResourceSpecByProject(
+            self.tokens,
+            self.resource_configs.get("train_resourceGroupName", None),
+            self.resource_configs.get("train_resourceGroupId", None),
+            self.resource_configs.get("train_resourceSpecName", None),
+            self.resource_configs.get("train_resourceSpecId", None)
+        )
+        if "train_resourceGroupId" not in self.resource_configs:
+            self.resource_configs["train_resourceGroupId"] = resourceGroupId
+        if "train_resourceSpecId" not in self.resource_configs:
+            self.resource_configs['train_resourceSpecId'] = specId
+
         LOG.info(f"resource_configs: {self.resource_configs}")
 
     def _read_config_file(self, file_path):

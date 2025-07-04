@@ -279,7 +279,10 @@ def make_graph(nodes: List[dict], edges: List[Union[List[str], dict]] = [],
     with graph() as g:
         for node in nodes:
             setattr(g, node.name, node.func)
+        for node in resources:
+            setattr(g, node.name, node.func)
     g.set_node_arg_name([node.arg_names for node in nodes])
+    g.set_node_arg_name([node.arg_names for node in resources])
 
     if not edges:
         edges = ([dict(iid='__start__', oid=nodes[0].id)] + [

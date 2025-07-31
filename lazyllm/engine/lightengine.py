@@ -328,10 +328,11 @@ class LightEngine(Engine):
         if len(node_ids) == 1 and isinstance(node_ids[0], (tuple, list)): node_ids = node_ids[0]
         for nodeid in node_ids:
             self.stop(nodeid)
-            # TODO(wangzhihong): Analyze dependencies and only allow deleting nodes without dependencies
-            [self._nodes.pop(id, None) for id in self.subnodes(nodeid, recursive=True)
-             if id not in ('__start__', '__end__')]
-            if nodeid not in ('__start__', '__end__'): self._nodes.pop(nodeid, None)
+            self._nodes.pop(nodeid, None)
+            # # TODO(wangzhihong): Analyze dependencies and only allow deleting nodes without dependencies
+            # [self._nodes.pop(id, None) for id in self.subnodes(nodeid, recursive=True)
+            #  if id not in ('__start__', '__end__')]
+            # if nodeid not in ('__start__', '__end__'): self._nodes.pop(nodeid, None)
 
     def update_node(self, node):
         if not isinstance(node, Node):

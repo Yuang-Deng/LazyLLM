@@ -99,6 +99,8 @@ class TestEngine(object):
                        _file_resources={'file-resource': os.path.join(lazyllm.config['data_path'], 'ci_data/ji.jpg')})
         assert '鸡' in r or 'chicken' in r
 
+        engine.release_node(gid)
+
         r = engine.run(gid, '你好，很高兴认识你')
         assert '你好' in r
 
@@ -309,3 +311,7 @@ class TestEngine(object):
         edges = [dict(iid='__start__', oid='4'), dict(iid='4', oid='__end__')]
         with pytest.raises(AssertionError):
             gid = engine.start(nodes, edges, resources=resource)
+
+if __name__ == '__main__':
+    test = TestEngine()
+    test.test_multimedia()

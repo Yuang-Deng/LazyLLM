@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 import sys
+import weakref
 
 # Each session will have a separate engine
 class Engine(ABC):
@@ -38,7 +39,30 @@ class Engine(ABC):
 
         def __setitem__(self, key, value):
             if key in self._default_keys: return
-            super(__class__, self).__setitem__(key, value)
+
+            if value.kind == 'Graph':  # strong reference
+                super(__class__, self).__setitem__(key, value)
+            else:  # weak reference (default)
+                def callback(ref):
+                    print(f"Warning: Node '{key}' has been garbage collected")
+
+                weak_value = weakref.ref(value, callback)
+                super(__class__, self).__setitem__(key, weak_value)
+
+        def __getitem__(self, key):
+            value = super(__class__, self).__getitem__(key)
+            if isinstance(value, weakref.ref):
+                actual_value = value()
+                if actual_value is None:
+                    raise KeyError(f"Referenced object for key '{key}' has been garbage collected")
+                return actual_value
+            return value
+
+        def get(self, key, default=None):
+            try:
+                return self[key]
+            except KeyError:
+                return default
 
         def update(self, __other=None, **kw):
             if __other:
@@ -284,10 +308,12 @@ def make_graph(nodes: List[dict], edges: List[Union[List[str], dict]] = [],
             g.add_edge(engine._nodes[edge['iid']].name, engine._nodes[edge['oid']].name, formatter)
 
     sg = ServerGraph(g, server_resources['server'], server_resources['web'], _history_ids=_history_ids)
+    sg._nodes = nodes + resources
     for kind, node in server_resources.items():
         if node:
             node.args = dict(kind=kind, graph=sg, args=node.args)
-            engine.build_node(node)
+            server_node = engine.build_node(node)
+            sg._nodes.append(server_node)
     return sg
 
 
@@ -380,11 +406,15 @@ def make_intention(base_model: str, nodes: Dict[str, List[dict]],
                    prompt: str = '', constrain: str = '', attention: str = ''):
     with IntentClassifier(Engine().build_node(base_model).func,
                           prompt=prompt, constrain=constrain, attention=attention) as ic:
+        ic._nodes_ref = []
         for cond, nodes in nodes.items():
             if isinstance(nodes, list) and len(nodes) > 1:
-                f = pipeline([Engine().build_node(node).func for node in nodes])
+                nodes = [Engine().build_node(node) for node in nodes]
+                f = pipeline([node.func for node in nodes])
             else:
-                f = Engine().build_node(nodes[0] if isinstance(nodes, list) else nodes).func
+                nodes = Engine().build_node(nodes[0] if isinstance(nodes, list) else nodes)
+                f = nodes.func
+            ic._nodes_ref.append(nodes)
             ic.case[cond::f]
     return ic
 

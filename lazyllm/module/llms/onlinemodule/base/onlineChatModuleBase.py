@@ -11,7 +11,7 @@ import time
 from operator import itemgetter as itemget
 
 import lazyllm
-from lazyllm import globals
+from lazyllm import globals, package
 from lazyllm.components.prompter import PrompterBase
 from lazyllm.components.formatter import FormatterBase
 from lazyllm.components.utils.file_operate import delete_old_files, image_to_base64
@@ -162,8 +162,14 @@ class OnlineChatModuleBase(LLMBase):
             return {k: self._merge_stream_result([d.get(k) for d in src], k == 'content') for k in set().union(*src)}
         return src[-1]
 
-    def forward(self, __input: Union[Dict, str] = None, *, llm_chat_history: List[List[str]] = None,
-                tools: List[Dict[str, Any]] = None, stream_output: bool = False, lazyllm_files=None, **kw):
+    def __call__(self, *args, **kw):
+        assert self._url is not None, f'Please start {self.__class__} first'
+        if len(args) > 1:
+            return super(__class__, self).__call__(package(args), **kw)
+        return super(__class__, self).__call__(*args, **kw)
+
+    def forward(self, __input: Union[Tuple[Union[str, Dict], str], str, Dict] = package(),
+                *, llm_chat_history=None, lazyllm_files=None, tools=None, stream_output=False, **kw):
         """LLM inference interface"""
         stream_output = stream_output or self._stream
         __input, files = self._get_files(__input, lazyllm_files)

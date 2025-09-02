@@ -29,7 +29,6 @@ class TestTrainServe:
                 'lora_rank': 8,
                 'lora_alpha': 32,
                 'trust_remote_code': True,
-                'ngpus': 1,
             },
             'training_dataset': [
                 {
@@ -38,9 +37,9 @@ class TestTrainServe:
                     'dataset_id': 'alpaca_zh_128'
                 }
             ],
-            'validation_dataset': [],
-            'validate_dataset_split_percent': 0.1,
             'stage': 'SFT',
+            'ngpus': 1,
+            'train_framework': 'llamafactory',
         }
 
         # Launch train

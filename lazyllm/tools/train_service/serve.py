@@ -19,7 +19,7 @@ from urllib.parse import unquote
 
 import lazyllm
 from lazyllm.launcher import Status
-from lazyllm.module.llms.utils import uniform_sft_dataset
+from lazyllm.module.llms.utils import uniform_sft_dataset, concat_jsonl_datasets
 from lazyllm import FastapiApp as app
 from lazyllm.tools.services import ServerBase
 
@@ -153,19 +153,23 @@ class TrainServer(ServerBase):
         os.makedirs(save_root, exist_ok=True)
 
         # Uniform Training DataSet:
-        assert len(job.training_dataset) == 1, "just support one train dataset"
-        data_path = job.training_dataset[0].dataset_download_uri
-        if is_url(data_path):
-            response = requests.get(data_path, stream=True)
-            if response.status_code == 200:
-                file_name = get_filename_from_url(data_path)
-                target_path = os.path.join(save_root, file_name)
-                with open(target_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                data_path = target_path
-            else:
-                raise HTTPException(status_code=404, detail='dataset download failed')
+        data_paths = [dataset.dataset_download_uri for dataset in job.training_dataset]
+        new_data_paths = []
+        for data_path in data_paths:
+            if is_url(data_path):
+                response = requests.get(data_path, stream=True)
+                if response.status_code == 200:
+                    file_name = get_filename_from_url(data_path)
+                    target_path = os.path.join(save_root, file_name)
+                    with open(target_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    new_data_paths.append(target_path)
+                else:
+                    lazyllm.LOG.error(f'dataset download failed: {data_path}')
+        
+        if len(new_data_paths) == 0:
+            raise HTTPException(status_code=404, detail='no valid dataset')
 
         # Add launcher into hyperparameters:
         hypram = job.training_args
@@ -173,11 +177,13 @@ class TrainServer(ServerBase):
 
         if job.train_framework == 'llamafactory':
             hypram['stage'] = job.stage
-            data_path = uniform_sft_dataset(data_path, target='alpaca')
+            train_data_path = uniform_sft_dataset(new_data_paths, target='alpaca')
+        else:
+            train_data_path = concat_jsonl_datasets(new_data_paths)
 
         # Set params for TrainableModule:
         m = lazyllm.TrainableModule(job.model, save_root)\
-            .trainset(data_path)\
+            .trainset(train_data_path)\
             .finetune_method(getattr(lazyllm.finetune, job.train_framework))
 
         # Launch Training:
@@ -211,7 +217,7 @@ class TrainServer(ServerBase):
             'created_at': create_time,
             'fine_tuned_model': save_path,
             'status': status,
-            'data_path': data_path,
+            'data_path': train_data_path,
             'hyperparameters': hypram,
             'log_path': log_path,
             'started_at': started_time,
@@ -322,11 +328,13 @@ class TrainServer(ServerBase):
         model_path = info['fine_tuned_model']
         if not model_path or not os.path.exists(model_path):
             raise HTTPException(status_code=404, detail='model file not found')
-        target_dir = os.path.join(lazyllm.config['model_path'], model.model_display_name)
+        target_dir = os.path.join(lazyllm.config['model_path'], 'ft_models', model.model_display_name)
         if os.path.exists(target_dir):
-            raise HTTPException(status_code=404, detail='target dir already exists')
+            shutil.rmtree(target_dir)
         shutil.copytree(model_path, target_dir)
         shutil.rmtree(model_path)
+        new_log_path = os.path.join(target_dir, os.path.basename(info['log_path']))
+        self._update_user_job_info(token, job_id, {'log_path': new_log_path})
         return
 
     @app.get('/v1/finetuneTasks/{job_id}/runningMetrics')

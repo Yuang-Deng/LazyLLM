@@ -12,7 +12,7 @@ from async_timeout import timeout
 import lazyllm
 from lazyllm.launcher import Status
 from lazyllm import FastapiApp as app
-from ..services import ServerBase
+from lazyllm.tools.services import ServerBase
 
 DEFAULT_TOKEN = 'default_token'
 
@@ -29,6 +29,7 @@ class JobDescription(BaseModel):
         'vlm',
         'stt',
         'sd',
+        'ocr',
         'cross_modal_embed',
     ] = Field(default='llm')
 

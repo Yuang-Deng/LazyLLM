@@ -1,7 +1,10 @@
 import os
 import json
 import random
+import re
 import shutil
+import ipaddress
+from urllib.parse import urlparse
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG
@@ -82,6 +85,17 @@ class Mindie(LazyLLMDeployBase):
         with open(self.mindie_config_path, 'w') as file:
             json.dump(self.config_dict, file)
 
+    def generate_remote_command(self):
+        config_json = json.dumps(self.config_dict)
+        # Escape double quotes to avoid shell issues
+        escaped_config = config_json.replace('"', '\\"')
+        cmd = (
+            f'[ -f {self.mindie_config_path} ] && cp {self.mindie_config_path} {self.backup_path} ; '
+            f'echo "{escaped_config}" > {self.mindie_config_path} ; '
+        )
+        if self.temp_folder: cmd += f"mkdir -p {self.temp_folder} ; "
+        return cmd
+
     def update_config(self):
         backend_config = self.config_dict["BackendConfig"]
         backend_config["npuDeviceIds"] = self.kw["npuDeviceIds"]
@@ -117,10 +131,12 @@ class Mindie(LazyLLMDeployBase):
 
             self.update_config()
 
-        self.save_config()
+        # self.save_config()
 
         def impl():
-            cmd = f'{os.path.join(self.mindie_home, "mindie-service/bin/mindieservice_daemon")}'
+            config_cmd = self.generate_remote_command()
+            cmd = config_cmd + f'{os.path.join(self.mindie_home, "mindie-service/bin/mindieservice_daemon")}'
+            cmd += f" --port={self.kw['port']}"
             if self.temp_folder: cmd += f' 2>&1 | tee {get_log_path(self.temp_folder)}'
             return cmd
 
@@ -132,9 +148,36 @@ class Mindie(LazyLLMDeployBase):
         if lazyllm.config['mode'] == lazyllm.Mode.Display:
             return f'http://{job.get_jobip()}:{self.kw["port"]}/generate'
         else:
-            LOG.info(f"MindIE Server running on http://{job.get_jobip()}:{self.kw['port']}")
-            return f'http://{job.get_jobip()}:{self.kw["port"]}/generate'
+            ip_or_url = job.get_jobip()
+            try:
+                ipaddress.ip_address(ip_or_url)
+                LOG.info(f"MindIE Server running on http://{ip_or_url}:{self.kw['port']}")
+                return f'http://{ip_or_url}:{self.kw["port"]}/generate'
+            except ValueError:
+                pass
+
+            parsed = urlparse(ip_or_url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                return ip_or_url + "/generate"
+
+            raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
 
     @staticmethod
     def extract_result(x, inputs):
-        return json.loads(x)['text'][0]
+        try:
+            return json.loads(x)['text'][0]
+        except Exception:
+            try:
+                json_strs = re.findall(r'\{.*?\}', x)
+                texts = []
+                for item in json_strs:
+                    obj = json.loads(item)
+                    texts.extend(obj.get("text", []))
+                return "".join(texts)
+            except Exception as e:
+                LOG.warning(f'JSONDecodeError on load {x!r}')
+                raise e
+
+    @staticmethod
+    def stream_url_suffix():
+        return ''

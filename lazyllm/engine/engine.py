@@ -264,7 +264,10 @@ def make_graph(nodes: List[dict], edges: Optional[List[Union[List[str], dict]]] 
     with graph() as g:
         for node in nodes:
             setattr(g, node.name, node.func)
+        for node in resources:
+            setattr(g, node.name, node.func)
     g.set_node_arg_name([node.arg_names for node in nodes])
+    g.set_node_arg_name([node.arg_names for node in resources])
 
     if not edges:
         edges = ([dict(iid='__start__', oid=nodes[0].id)] + [
@@ -364,7 +367,7 @@ def make_ifs(cond: str, true: List[dict], false: List[dict], judge_on_full_input
 
 @NodeConstructor.register('LocalLLM')
 def make_local_llm(base_model: str, target_path: str = '', prompt: str = '', stream: bool = False,
-                   return_trace: bool = False, deploy_method: str = 'auto', url: Optional[str] = None,
+                   return_trace: bool = False, deploy_method: str = 'mindie', url: Optional[str] = None,
                    history: Optional[List[List[str]]] = None):
     if history and not (isinstance(history, list) and all(len(h) == 2 and isinstance(h, list) for h in history)):
         raise TypeError('history must be List[List[str, str]]')

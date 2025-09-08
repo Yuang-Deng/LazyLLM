@@ -2,6 +2,8 @@ import os
 import random
 import inspect
 import sys
+import ipaddress
+from urllib.parse import urlparse
 
 from lazyllm import launchers, LazyLLMCMD, dump_obj
 from ..base import LazyLLMDeployBase, verify_fastapi_func
@@ -48,7 +50,18 @@ class RelayServer(LazyLLMDeployBase):
     def geturl(self, job=None):
         if job is None:
             job = self.job
-        return f'http://{job.get_jobip()}:{self.real_port}/generate'
+        ip_or_url = job.get_jobip()
+        try:
+            ipaddress.ip_address(ip_or_url)
+            return f'http://{ip_or_url}:{self.real_port}/generate'
+        except ValueError:
+            pass
+
+        parsed = urlparse(ip_or_url)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return ip_or_url + "/generate"
+
+        raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
 
 
 class FastapiApp(object):

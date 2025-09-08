@@ -1,6 +1,8 @@
 import os
 import json
 import random
+import ipaddress
+from urllib.parse import urlparse
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG
@@ -68,7 +70,18 @@ class Infinity(LazyLLMDeployBase):
         if lazyllm.config['mode'] == lazyllm.Mode.Display:
             return f'http://<ip>:<port>/{self.target_name}'
         else:
-            return f'http://{job.get_jobip()}:{self.kw["port"]}/{self.target_name}'
+            ip_or_url = job.get_jobip()
+            try:
+                ipaddress.ip_address(ip_or_url)
+                return f'http://{ip_or_url}:{self.kw["port"]}/{self.target_name}'
+            except ValueError:
+                pass
+
+            parsed = urlparse(ip_or_url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                return ip_or_url + f"/{self.target_name}"
+
+            raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
 
     @staticmethod
     def extract_result(x, inputs):

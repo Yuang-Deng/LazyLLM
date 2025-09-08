@@ -2,7 +2,7 @@ import os
 import json
 import random
 import ipaddress
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG
@@ -96,7 +96,7 @@ class Lightllm(LazyLLMDeployBase):
 
             parsed = urlparse(ip_or_url)
             if parsed.scheme in ("http", "https") and parsed.netloc:
-                return urljoin(ip_or_url, "/generate")
+                return ip_or_url + "/generate"
 
             raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
 

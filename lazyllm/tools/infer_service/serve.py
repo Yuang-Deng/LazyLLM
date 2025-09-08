@@ -3,6 +3,8 @@ import time
 import asyncio
 import threading
 from datetime import datetime
+from typing import Literal
+import uuid
 from pydantic import BaseModel, Field
 from fastapi import HTTPException, Header
 from async_timeout import timeout
@@ -10,7 +12,7 @@ from async_timeout import timeout
 import lazyllm
 from lazyllm.launcher import Status
 from lazyllm import FastapiApp as app
-from ..services import ServerBase
+from lazyllm.tools.services import ServerBase
 
 DEFAULT_TOKEN = 'default_token'
 
@@ -19,7 +21,17 @@ class JobDescription(BaseModel):
     model_name: str = Field(default='qwen1.5-0.5b-chat')
     framework: str = Field(default='auto')
     num_gpus: int = Field(default=1)
-
+    model_type: Literal[
+        'embed',
+        'reranker',
+        'llm',
+        'tts',
+        'vlm',
+        'stt',
+        'sd',
+        'ocr',
+        'cross_modal_embed',
+    ] = Field(default='llm')
 
 class InferServer(ServerBase):
 
@@ -133,10 +145,9 @@ class InferServer(ServerBase):
     async def create_job(self, job: JobDescription, token: str = Header(DEFAULT_TOKEN)):  # noqa B008
         if not self._in_user_job_info(token):
             self._update_user_job_info(token)
-        if self._in_active_jobs(token, job.service_name):
-            raise HTTPException(status_code=400, detail='Service name already exists')
 
-        job_id = job.service_name
+        create_time = datetime.now().strftime(self._time_format)
+        job_id = '-'.join(['inf', create_time, str(uuid.uuid4())[:5]])
         create_time = datetime.now().strftime(self._time_format)
 
         # Build checkpoint save dir:
@@ -146,7 +157,7 @@ class InferServer(ServerBase):
         os.makedirs(save_root, exist_ok=True)
         # wait 5 minutes for launch cmd
         hypram = dict(launcher=lazyllm.launchers.remote(sync=False, ngpus=job.num_gpus, retry=30), log_path=save_root)
-        m = lazyllm.TrainableModule(job.model_name).deploy_method((lazyllm.deploy.auto, hypram))
+        m = lazyllm.TrainableModule(job.model_name, type=job.model_type).deploy_method((lazyllm.deploy.auto, hypram))
 
         # Launch Deploy:
         thread = threading.Thread(target=m.start)

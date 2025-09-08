@@ -128,6 +128,20 @@ model_provider = {
 }
 
 model_name_mapping = {
+    "bert-base-uncased": {
+        "source": {
+            "huggingface": "google/bert-base-uncased",
+            "modelscope": "AI-ModelScope/bert-base-uncased"
+        },
+        "type": "embed"
+    },
+    "roberta-base": {
+        "source": {
+            "huggingface": "FacebookAI/roberta-base",
+            "modelscope": "AI-ModelScope/roberta-base"
+        },
+        "type": "embed"
+    },
     "bark": {
         "source": {
             "huggingface": "suno/bark",

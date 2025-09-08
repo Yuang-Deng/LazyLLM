@@ -2,7 +2,7 @@ import os
 import json
 from datetime import datetime
 from dataclasses import dataclass, asdict
-from typing import Callable, Dict, Union, Tuple, Any, Optional
+from typing import Callable, Dict, Union, Tuple, Any, Optional, List
 
 import lazyllm
 from lazyllm import LOG
@@ -38,7 +38,7 @@ def update_config(input_dict: dict, default_data: type) -> dict:
 
 INPUT_SPLIT = " ### input "
 
-def uniform_sft_dataset(dataset_path: str, target: str = 'alpaca') -> str:
+def uniform_sft_dataset(dataset_paths: List[str], target: str = 'alpaca') -> str:
     '''
     {origin_format}.{suffix} -> {target_format}, supported all 8 cases:
     1. openai.json   -> alpaca: Conversion: openai2alpaca: json
@@ -51,10 +51,10 @@ def uniform_sft_dataset(dataset_path: str, target: str = 'alpaca') -> str:
     8. alpaca.jsonl  -> openai: Conversion: alpaca2openai: jsonl
     Note: target-suffix does match:{'openai': 'jsonl'; 'alpaca': 'json'}
     '''
-    assert os.path.exists(dataset_path), f"Path: {dataset_path} does not exist!"
+    assert all([os.path.exists(dataset_path) for dataset_path in dataset_paths]), f"Path: {dataset_paths} does not exist!"
 
-    data = datasets.load_dataset('json', data_files=dataset_path)
-    file_name = os.path.basename(dataset_path)
+    data = datasets.load_dataset('json', data_files=dataset_paths)
+    file_name = os.path.basename(dataset_paths[0])
     base_name, suffix = file_name.split('.')
     assert suffix in ['json', 'jsonl']
     target = target.strip().lower()
@@ -69,15 +69,13 @@ def uniform_sft_dataset(dataset_path: str, target: str = 'alpaca') -> str:
     if origin_format == target:
         if target == 'alpaca':
             if suffix == 'json':
-                return dataset_path
+                save_data = data['train'].to_list()
             else:
                 save_data = alpaca_filter_null(data)
         else:
-            if suffix == 'jsonl':
-                return dataset_path
-            else:
+            save_data = data['train'].to_list()
+            if suffix != 'jsonl':
                 save_suffix = 'jsonl'
-                save_data = data['train'].to_list()
     else:
         # The format is inconsistent, conversion is required
         if target == 'alpaca':
@@ -89,6 +87,13 @@ def uniform_sft_dataset(dataset_path: str, target: str = 'alpaca') -> str:
             raise ValueError(f"Not supported type: {target}")
 
     return save_dataset(save_data, save_suffix, base_name + f'_{suffix}')
+
+def concat_jsonl_datasets(dataset_paths: List[str]) -> str:
+    assert all([os.path.exists(dataset_path) & dataset_path.endswith('.jsonl') for dataset_path in dataset_paths]), f"Path: {dataset_paths} does not exist!"
+    data = datasets.load_dataset("json", data_files=dataset_paths)
+    file_name = os.path.basename(dataset_paths[0])
+    base_name, _ = file_name.split('.')
+    return save_dataset(data['train'].to_list(), 'jsonl', f'{base_name}')
 
 def save_json(data: list, output_json_path: str) -> None:
     with open(output_json_path, 'w', encoding='utf-8') as json_file:

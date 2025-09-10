@@ -7,8 +7,8 @@ import asyncio
 import json
 import threading
 from datetime import datetime
-from typing import List
-from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Literal
+from pydantic import BaseModel
 from fastapi import Body, HTTPException, Header, Query
 from async_timeout import timeout
 import re
@@ -19,9 +19,9 @@ from urllib.parse import unquote
 
 import lazyllm
 from lazyllm.launcher import Status
-from lazyllm.module.llms.utils import uniform_sft_dataset
+from lazyllm.module.llms.utils import uniform_sft_dataset, concat_jsonl_datasets
 from lazyllm import FastapiApp as app
-from ..services import ServerBase
+from lazyllm.tools.services import ServerBase
 
 DEFAULT_TOKEN = 'default_token'
 
@@ -52,30 +52,14 @@ class Dataset(BaseModel):
     format: int
     dataset_id: str
 
-class TrainingArgs(BaseModel):
-    val_size: float = 0.02
-    num_train_epochs: int = 1
-    learning_rate: float = 0.1
-    lr_scheduler_type: str = 'cosine'
-    per_device_train_batch_size: int = 32
-    cutoff_len: int = 1024
-    finetuning_type: str = 'lora'
-    lora_rank: int = 8
-    lora_alpha: int = 32
-    trust_remote_code: bool = True
-    ngpus: int = 1
-
-    class Config:
-        extra = "allow"  # extra fields are allowed
-
 class JobDescription(BaseModel):
     name: str
     model: str
-    training_args: TrainingArgs = Field(default_factory=TrainingArgs)
+    training_args: Dict[str, Any] = {}
     training_dataset: List[Dataset] = []
-    validation_dataset: List[Dataset] = []
-    validate_dataset_split_percent: float = Field(default=0.0)
-    stage: str = ""
+    stage: Literal["sft", "rm", "ppo", "dpo"] = "sft"
+    ngpus: int = 1
+    train_framework: Literal["llamafactory", "flagembedding"] = "llamafactory"
 
 class ModelExport(BaseModel):
     name: str
@@ -168,30 +152,39 @@ class TrainServer(ServerBase):
         save_root = os.path.join(lazyllm.config['train_target_root'], token, job_id)
         os.makedirs(save_root, exist_ok=True)
 
-        # Add launcher into hyperparameters:
-        hypram = job.training_args.model_dump()
-
         # Uniform Training DataSet:
-        assert len(job.training_dataset) == 1, "just support one train dataset"
-        data_path = job.training_dataset[0].dataset_download_uri
-        if is_url(data_path):
-            response = requests.get(data_path, stream=True)
-            if response.status_code == 200:
-                file_name = get_filename_from_url(data_path)
-                target_path = os.path.join(save_root, file_name)
-                with open(target_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                data_path = target_path
-            else:
-                raise HTTPException(status_code=404, detail='dataset download failed')
+        data_paths = [dataset.dataset_download_uri for dataset in job.training_dataset]
+        new_data_paths = []
+        for data_path in data_paths:
+            if is_url(data_path):
+                response = requests.get(data_path, stream=True)
+                if response.status_code == 200:
+                    file_name = get_filename_from_url(data_path)
+                    target_path = os.path.join(save_root, file_name)
+                    with open(target_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    new_data_paths.append(target_path)
+                else:
+                    lazyllm.LOG.error(f'dataset download failed: {data_path}')
+        
+        if len(new_data_paths) == 0:
+            raise HTTPException(status_code=404, detail='no valid dataset')
 
-        data_path = uniform_sft_dataset(data_path, target='alpaca')
+        # Add launcher into hyperparameters:
+        hypram = job.training_args
+        hypram['ngpus'] = job.ngpus
+
+        if job.train_framework == 'llamafactory':
+            hypram['stage'] = job.stage
+            train_data_path = uniform_sft_dataset(new_data_paths, target='alpaca')
+        else:
+            train_data_path = concat_jsonl_datasets(new_data_paths)
 
         # Set params for TrainableModule:
         m = lazyllm.TrainableModule(job.model, save_root)\
-            .trainset(data_path)\
-            .finetune_method(lazyllm.finetune.llamafactory)
+            .trainset(train_data_path)\
+            .finetune_method(getattr(lazyllm.finetune, job.train_framework))
 
         # Launch Training:
         thread = threading.Thread(target=m._impl._async_finetune, args=(model_id,), kwargs=hypram)
@@ -224,7 +217,7 @@ class TrainServer(ServerBase):
             'created_at': create_time,
             'fine_tuned_model': save_path,
             'status': status,
-            'data_path': data_path,
+            'data_path': train_data_path,
             'hyperparameters': hypram,
             'log_path': log_path,
             'started_at': started_time,
@@ -335,11 +328,13 @@ class TrainServer(ServerBase):
         model_path = info['fine_tuned_model']
         if not model_path or not os.path.exists(model_path):
             raise HTTPException(status_code=404, detail='model file not found')
-        target_dir = os.path.join(lazyllm.config['model_path'], model.model_display_name)
+        target_dir = os.path.join(lazyllm.config['model_path'], 'ft_models', model.model_display_name)
         if os.path.exists(target_dir):
-            raise HTTPException(status_code=404, detail='target dir already exists')
+            shutil.rmtree(target_dir)
         shutil.copytree(model_path, target_dir)
         shutil.rmtree(model_path)
+        new_log_path = os.path.join(target_dir, os.path.basename(info['log_path']))
+        self._update_user_job_info(token, job_id, {'log_path': new_log_path})
         return
 
     @app.get('/v1/finetuneTasks/{job_id}/runningMetrics')

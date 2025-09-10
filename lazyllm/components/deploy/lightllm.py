@@ -1,6 +1,8 @@
 import os
 import json
 import random
+import ipaddress
+from urllib.parse import urlparse
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG
@@ -65,6 +67,7 @@ class Lightllm(LazyLLMDeployBase):
                 LOG.warning(f"Note! That finetuned_model({finetuned_model}) is an invalid path, "
                             f"base_model({base_model}) will be used")
             finetuned_model = base_model
+            finetuned_model = '/home/mnt/cf/models/Qwen1.5-0.5B'
 
         def impl():
             if self.random_port:
@@ -86,7 +89,19 @@ class Lightllm(LazyLLMDeployBase):
         if lazyllm.config['mode'] == lazyllm.Mode.Display:
             return 'http://{ip}:{port}/generate'
         else:
-            return f'http://{job.get_jobip()}:{self.kw["port"]}/generate'
+            ip_or_url = job.get_jobip()
+            try:
+                ipaddress.ip_address(ip_or_url)
+                return f'http://{ip_or_url}:{self.kw["port"]}/generate'
+            except ValueError:
+                pass
+
+            parsed = urlparse(ip_or_url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                return ip_or_url + "/generate"
+
+            raise ValueError(f"Not a valid IP or URL: {ip_or_url}")
+
 
     @staticmethod
     def extract_result(x, inputs):

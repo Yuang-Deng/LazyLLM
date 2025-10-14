@@ -37,7 +37,14 @@ class ArgsDict(dict):
 
     def check_and_update(self, kw):
         assert set(kw.keys()).issubset(set(self)), f'unexpected keys: {set(kw.keys()) - set(self)}'
-        self.update(kw)
+        for k, v in kw.items():
+            try:
+                if self[k] is None:
+                    self[k] = float(v)
+                else:
+                    self[k] = type(self[k])(v)
+            except Exception:
+                self[k] = v
 
     def parse_kwargs(self):
         string = ' '.join(f'--{k}={v}' if type(v) is not str else f'--{k}=\"{v}\"' for k, v in self.items())

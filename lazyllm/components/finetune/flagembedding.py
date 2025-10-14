@@ -1,4 +1,5 @@
 import os
+import shutil
 import copy
 import random
 from datetime import datetime
@@ -104,7 +105,21 @@ class FlagembeddingFinetune(LazyLLMFinetuneBase):
         cache_path = os.path.join(os.path.expanduser(lazyllm.config['home']), 'fintune', 'embeding')
         cache_model_path = os.path.join(cache_path, "model")
         cache_data_path = os.path.join(cache_path, "data")
-        os.system(f'mkdir -p {cache_model_path} {cache_data_path}')
+        cache_config_path = os.path.join(cache_path, "config")
+        
+        os.system(f'mkdir -p {cache_model_path} {cache_data_path} {cache_config_path}')
+
+        # copy deepspeed config into cache_config_path and update the path
+        try:
+            if self.kw.get('deepspeed'):
+                ds_src = self.kw['deepspeed']
+                ds_name = os.path.basename(ds_src)
+                ds_dst = os.path.join(cache_config_path, ds_name)
+                if not os.path.exists(ds_dst) or os.path.getmtime(ds_src) > os.path.getmtime(ds_dst):
+                    shutil.copy(ds_src, ds_dst)
+                self.kw['deepspeed'] = ds_dst
+        except Exception:
+            pass
 
         cmds = (f'export WANDB_MODE=disabled && torchrun --nproc_per_node {self.nproc_per_node} '
                 f'-m {self.module_run_path} '

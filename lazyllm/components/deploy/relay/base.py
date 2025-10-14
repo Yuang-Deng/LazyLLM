@@ -2,6 +2,7 @@ import os
 import random
 import inspect
 import sys
+import shutil
 
 from lazyllm import launchers, LazyLLMCMD, dump_obj
 from ..base import LazyLLMDeployBase, verify_fastapi_func
@@ -29,10 +30,19 @@ class RelayServer(LazyLLMDeployBase):
         self.func = dump_obj(func or self.func)
         folder_path = os.path.dirname(os.path.abspath(__file__))
         run_file_path = os.path.join(folder_path, 'server.py')
+        if self.temp_folder:
+            dst_run_file_path = os.path.join(self.temp_folder, 'server.py')
+            try:
+                shutil.copy(run_file_path, dst_run_file_path)
+            except Exception as e:
+                dst_run_file_path = run_file_path
+            run_file_path = dst_run_file_path
+        else:
+            run_file_path = run_file_path
 
         def impl():
             self.real_port = self.port if self.port else random.randint(30000, 40000)
-            cmd = f'{sys.executable} {run_file_path} --open_port={self.real_port} --function="{self.func}" '
+            cmd = f'python {run_file_path} --open_port={self.real_port} --function="{self.func}" '
             if self.pre:
                 cmd += f'--before_function="{self.pre}" '
             if self.post:

@@ -167,6 +167,8 @@ class TrainServer(ServerBase):
                     new_data_paths.append(target_path)
                 else:
                     lazyllm.LOG.error(f'dataset download failed: {data_path}')
+            else:
+                new_data_paths.append(data_path)
         
         if len(new_data_paths) == 0:
             raise HTTPException(status_code=404, detail='no valid dataset')

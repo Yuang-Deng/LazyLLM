@@ -2,6 +2,7 @@ import os
 import json
 import random
 import importlib.util
+import shutil
 
 import lazyllm
 from lazyllm import launchers, LazyLLMCMD, ArgsDict, LOG, config
@@ -73,8 +74,18 @@ class LMDeploy(LazyLLMDeployBase):
             self.kw.pop("chat-template")
         else:
             if not self.kw["chat-template"] and 'vl' not in finetuned_model and 'lava' not in finetuned_model:
-                self.kw["chat-template"] = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                        'lmdeploy', 'chat_template.json')
+                src_chat_template = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                 'lmdeploy', 'chat_template.json')
+                if self.temp_folder:
+                    dst_chat_template = os.path.join(self.temp_folder, 'chat_template.json')
+                    try:
+                        shutil.copy(src_chat_template, dst_chat_template)
+                    except Exception as e:
+                        LOG.warning(f'Failed to copy chat_template.json to temp folder: {e}')
+                        dst_chat_template = src_chat_template
+                    self.kw["chat-template"] = dst_chat_template
+                else:
+                    self.kw["chat-template"] = src_chat_template
             else:
                 self.kw.pop("chat-template")
 

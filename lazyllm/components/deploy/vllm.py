@@ -96,7 +96,7 @@ class Vllm(LazyLLMDeployBase, metaclass=_VllmStreamParseParametersMeta):
             cmd = ''
             if self.launcher_list:
                 cmd += f"ray start --address='{master_ip}' && "
-            cmd += f'{sys.executable} -m {self._vllm_cmd} --model {finetuned_model} '
+            cmd += f'python -m {self._vllm_cmd} --model {finetuned_model} '
             if self._openai_api: cmd += '--served-model-name lazyllm '
             cmd += self.kw.parse_kwargs()
             if self.trust_remote_code:

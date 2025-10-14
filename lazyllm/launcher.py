@@ -1748,18 +1748,21 @@ class BocloudLauncher(LazyLLMLaunchersBase):
             if "llamafactory-cli" in cmd or "FlagEmbedding.finetune" in cmd:
                 self.task_type = "fine_tune"
             pythonpath = os.getenv("PYTHONPATH", '')
-            precmd = ('''export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH &&''',
-                      '''export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:$LD_LIBRARY_PATH &&''',
-                      '''export LAZYLLM_MINDIE_HOME=/usr/local/Ascend/mindie/latest &&''',
-                      '''export LAZYLLM_DEFAULT_EMBEDDING_ENGINE=transformers &&''',
-                      '''export PATH=$PATH:/usr/local/Ascend/mindie/latest/mindie-service/bin &&''',
-                      '''source /usr/local/Ascend/ascend-toolkit/set_env.sh &&''',
-                      '''source /usr/local/Ascend/nnal/atb/set_env.sh &&''',
-                      '''source /usr/local/Ascend/llm_model/set_env.sh &&''',
-                      '''source /usr/local/Ascend/mindie/latest/mindie-service/set_env.sh &&''',
-                      '''source /usr/local/Ascend/mindie/latest/mindie-llm/set_env.sh''')
-            precmd += (f'''export PYTHONPATH={os.getcwd()}:{pythonpath}:$PYTHONPATH '''
-                      f'''&& export PATH={os.path.join(os.path.expanduser('~'), '.local/bin')}:$PATH && ''')
+            precmd_parts = [
+                'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH &&',
+                'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common:$LD_LIBRARY_PATH &&',
+                'export LAZYLLM_MINDIE_HOME=/usr/local/Ascend/mindie/latest &&',
+                'export LAZYLLM_DEFAULT_EMBEDDING_ENGINE=transformers &&',
+                'export PATH=$PATH:/usr/local/Ascend/mindie/latest/mindie-service/bin &&',
+                'source /usr/local/Ascend/ascend-toolkit/set_env.sh &&',
+                'source /usr/local/Ascend/nnal/atb/set_env.sh &&',
+                'source /usr/local/Ascend/llm_model/set_env.sh &&',
+                'source /usr/local/Ascend/mindie/latest/mindie-service/set_env.sh &&',
+                'source /usr/local/Ascend/mindie/latest/mindie-llm/set_env.sh',
+                f"export PYTHONPATH={os.getcwd()}:{pythonpath}:$PYTHONPATH &&",
+                f"export PATH={os.path.join(os.path.expanduser('~'), '.local/bin')}:$PATH &&",
+            ]
+            precmd = " ".join(precmd_parts)
             if lazyllm.config['boc_env_name']:
                 precmd = f"source activate {lazyllm.config['boc_env_name']} && " + precmd
             if self.launcher.env_vars_config_path:

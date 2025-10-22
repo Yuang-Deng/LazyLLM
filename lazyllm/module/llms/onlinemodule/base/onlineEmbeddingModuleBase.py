@@ -1,8 +1,9 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from lazyllm import LOG
 from .utils import OnlineModuleBase
+from lazyllm.components.prompter.rerankPrompter import RerankPrompter
 
 
 class OnlineEmbeddingModuleBase(OnlineModuleBase):
@@ -26,7 +27,12 @@ class OnlineEmbeddingModuleBase(OnlineModuleBase):
         self._batch_size = batch_size
         self._num_worker = num_worker
         self._timeout = timeout
+        self._prompt = None
         if hasattr(self, '_set_embed_url'): self._set_embed_url()
+
+    def prompt(self, prompt: Optional[RerankPrompter] = None):
+        self._prompt = prompt
+        return self
 
     @property
     def series(self):
@@ -51,6 +57,10 @@ class OnlineEmbeddingModuleBase(OnlineModuleBase):
         }
 
     def forward(self, input: Union[List, str], **kwargs) -> Union[List[float], List[List[float]]]:
+        if self._prompt is not None:
+            input = self._prompt.build_instruct(input)
+            if 'documents' in kwargs:
+                kwargs['documents'] = self._prompt.build_documents(kwargs['documents'])
         data = self._encapsulated_data(input, **kwargs)
         proxies = {'http': None, 'https': None} if self.NO_PROXY else None
         if isinstance(data, list):

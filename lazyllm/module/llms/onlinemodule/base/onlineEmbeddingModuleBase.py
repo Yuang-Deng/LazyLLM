@@ -58,9 +58,9 @@ class OnlineEmbeddingModuleBase(OnlineModuleBase):
 
     def forward(self, input: Union[List, str], **kwargs) -> Union[List[float], List[List[float]]]:
         if self._prompt is not None:
-            input = self._prompt.build_instruct(input)
+            input = self._prompt.build_instruct(input, kwargs.pop('instruction', None))
             if 'documents' in kwargs:
-                kwargs['documents'] = self._prompt.build_documents(kwargs['documents'])
+                kwargs['documents'] = self._prompt.build_documents(kwargs['documents'], kwargs.pop('truncate_text', False))
         data = self._encapsulated_data(input, **kwargs)
         proxies = {'http': None, 'https': None} if self.NO_PROXY else None
         if isinstance(data, list):

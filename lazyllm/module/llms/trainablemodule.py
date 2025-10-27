@@ -519,7 +519,7 @@ class TrainableModule(UrlModule):
             if model_type in ['llm', 'vlm']:
                 self._openai_module = lazyllm.OnlineChatModule(
                     source='openai', model='lazyllm', base_url=self._url, skip_auth=True, type=model_type,
-                    stream=self._stream).share(prompt=self._prompt, format=self._formatter)
+                    stream=self._stream, static_params=kw).share(prompt=self._prompt, format=self._formatter)
                 self._openai_module._prompt._set_model_configs(system='You are LazyLLM, \
                     a large language model developed by SenseTime.')
             elif model_type in ['embed', 'rerank']:

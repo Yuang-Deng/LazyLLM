@@ -76,9 +76,9 @@ class RerankPrompter(object):
         self.template = _get_template_for_model(model_name)
         assert self.template is not None, f'Template for model {model_name} not found'
 
-    def build_instruct(self, query: str, instruction: str = default_task_instruction) -> str:
+    def build_instruct(self, query: str, instruction: Optional[str] = None) -> str:
         return self.template['query_template'].format(
-            instruction=instruction, query=query
+            instruction=instruction or default_task_instruction, query=query
         )
 
     def build_documents(self, texts: List[str], truncate_text: bool = False) -> List[str]:

@@ -303,6 +303,7 @@ jobs:
         timeout-minutes: 25
 
       - name: Start tmate session
+        if: always()
         uses: mxschmitt/action-tmate@v3
 
       - name: Save pytest cache

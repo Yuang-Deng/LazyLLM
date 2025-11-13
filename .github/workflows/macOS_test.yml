@@ -281,6 +281,7 @@ jobs:
          pip install -r tests/requirements.txt
          export LAZYLLM_DATA_PATH=/tmp/lazyllm/data
          pip install -e .
+         git checkout agent_refact
          if [ -f tests/charge_tests/.pytest-cache/v/cache/lastfailed ]; then
            python -m pytest --lf --last-failed-no-failures=none -m "not skip_on_mac" -v --reruns=2 tests/charge_tests
          else

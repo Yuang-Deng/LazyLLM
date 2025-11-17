@@ -21,7 +21,7 @@ import lazyllm
 from lazyllm.launcher import Status
 from lazyllm.module.llms.utils import uniform_sft_dataset
 from lazyllm import FastapiApp as app
-from ..services import ServerBase
+from lazyllm.tools.services import ServerBase
 
 DEFAULT_TOKEN = 'default_token'
 
@@ -239,24 +239,13 @@ class TrainServer(ServerBase):
         if not self._in_active_jobs(token, job_id):
             raise HTTPException(status_code=404, detail='Job not found')
 
+        try:
+            await self.pause_job(job_id, token)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f'Task {job_id}, cancelled failed, {e}')
         m, _ = self._pop_active_job(token, job_id)
         info = self._read_user_job_info(token, job_id)
-        m.stop(info['model_id'])
-
-        total_sleep = 0
-        while m.status(info['model_id']) != Status.Cancelled:
-            time.sleep(1)
-            total_sleep += 1
-            if total_sleep > 10:
-                raise HTTPException(status_code=404, detail=f'Task {job_id}, ccancelled timed out.')
-
         status = m.status(info['model_id']).name
-        update_dict = {'status': status}
-        if info['started_at'] and not info['cost']:
-            update_dict['cost'] = (datetime.now() - datetime.strptime(info['started_at'],
-                                                                      self._time_format)).total_seconds()
-        self._update_user_job_info(token, job_id, update_dict)
-
         return {'status': status}
 
     @app.get('/v1/finetuneTasks/jobs')
@@ -348,7 +337,29 @@ class TrainServer(ServerBase):
 
     @app.post('/v1/finetuneTasks/{job_id}:pause')
     async def pause_job(self, job_id: str, name: str = Body(embed=True), token: str = Header(DEFAULT_TOKEN)):  # noqa B008
-        raise HTTPException(status_code=404, detail='not implemented')
+        await self.authorize_current_user(token)
+        if not self._in_active_jobs(token, job_id):
+            raise HTTPException(status_code=404, detail='Job not found')
+
+        m, _ = self._read_active_job(token, job_id)
+        info = self._read_user_job_info(token, job_id)
+        m.stop(info['model_id'])
+
+        total_sleep = 0
+        while m.status(info['model_id']) != Status.Cancelled:
+            time.sleep(1)
+            total_sleep += 1
+            if total_sleep > 10:
+                raise HTTPException(status_code=404, detail=f'Task {job_id}, ccancelled timed out.')
+
+        status = m.status(info['model_id']).name
+        update_dict = {'status': status}
+        if info['started_at'] and not info['cost']:
+            update_dict['cost'] = (datetime.now() - datetime.strptime(info['started_at'],
+                                                                      self._time_format)).total_seconds()
+        self._update_user_job_info(token, job_id, update_dict)
+
+        return {'status': status}
 
     @app.post('/v1/finetuneTasks/{job_id}:resume')
     async def resume_job(self, job_id: str, name: str = Body(embed=True), token: str = Header(DEFAULT_TOKEN)):  # noqa B008

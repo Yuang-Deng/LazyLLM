@@ -678,7 +678,7 @@ class QwenText2Video(LazyLLMOnlineText2VideoModuleBase, QwenMultiModal):
             call_params['api_key'] = self._api_key
 
         # Async call for video generation
-        task_response = dashscope.video_generation.VideoSynthesis.async_call(**call_params)
+        task_response = dashscope.VideoSynthesis.async_call(**call_params)
         if task_response.status_code != HTTPStatus.OK:
             raise RuntimeError(
                 f'Failed to create video synthesis task, '
@@ -693,7 +693,7 @@ class QwenText2Video(LazyLLMOnlineText2VideoModuleBase, QwenMultiModal):
         wait_params = {'task': task_id}
         if self._api_key:
             wait_params['api_key'] = self._api_key
-        response = dashscope.video_generation.VideoSynthesis.wait(**wait_params)
+        response = dashscope.VideoSynthesis.wait(**wait_params)
 
         if response.status_code != HTTPStatus.OK:
             error_msg = getattr(response.output, 'message', 'Unknown error')
@@ -805,7 +805,7 @@ class QwenImage2Video(LazyLLMOnlineImage2VideoModuleBase, QwenMultiModal):
             call_params['api_key'] = self._api_key
 
         # Async call for video generation
-        task_response = dashscope.video_generation.VideoSynthesis.async_call(**call_params)
+        task_response = dashscope.VideoSynthesis.async_call(**call_params)
         if task_response.status_code != HTTPStatus.OK:
             raise RuntimeError(
                 f'Failed to create video synthesis task, '
@@ -820,7 +820,7 @@ class QwenImage2Video(LazyLLMOnlineImage2VideoModuleBase, QwenMultiModal):
         wait_params = {'task': task_id}
         if self._api_key:
             wait_params['api_key'] = self._api_key
-        response = dashscope.video_generation.VideoSynthesis.wait(**wait_params)
+        response = dashscope.VideoSynthesis.wait(**wait_params)
 
         if response.status_code != HTTPStatus.OK:
             error_msg = getattr(response.output, 'message', 'Unknown error')

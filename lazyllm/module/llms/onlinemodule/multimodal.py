@@ -20,6 +20,8 @@ class OnlineMultiModalModule(metaclass=_OnlineMultiModalMeta):
     - Speech-to-Text (STT)
     - Text-to-Speech (TTS)
     - Text-to-Image generation
+    - Text-to-Video generation
+    - Image-to-Video generation
 
     Example:
         # Create an online STT
@@ -30,12 +32,20 @@ class OnlineMultiModalModule(metaclass=_OnlineMultiModalMeta):
 
         # Create an online text-to-image
         img_gen = OnlineMultiModalModule(source='qwen', function='text2image')
+
+        # Create an online text-to-video
+        t2v = OnlineMultiModalModule(source='qwen', function='text2video')
+
+        # Create an online image-to-video
+        i2v = OnlineMultiModalModule(source='qwen', function='image2video')
     '''
     TYPE_GROUP_MAP = {
         'stt': LLMType.STT,
         'tts': LLMType.TTS,
         'text2image': LLMType.TEXT2IMAGE,
         'image_editing': LLMType.TEXT2IMAGE,
+        'text2video': LLMType.TEXT2VIDEO,
+        'image2video': LLMType.IMAGE2VIDEO,
     }
 
     @staticmethod

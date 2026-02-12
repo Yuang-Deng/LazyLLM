@@ -134,3 +134,11 @@ class LazyLLMOnlineText2ImageModuleBase(OnlineMultiModalBase):
 
 class LazyLLMOnlineImageEditingModuleBase(OnlineMultiModalBase):
     __lazyllm_registry_key__ = LLMType.IMAGE_EDITING
+
+
+class LazyLLMOnlineText2VideoModuleBase(OnlineMultiModalBase):
+    __lazyllm_registry_key__ = LLMType.TEXT2VIDEO
+
+
+class LazyLLMOnlineImage2VideoModuleBase(OnlineMultiModalBase):
+    __lazyllm_registry_key__ = LLMType.IMAGE2VIDEO

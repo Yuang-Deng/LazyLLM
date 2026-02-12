@@ -8,7 +8,8 @@ import lazyllm
 from lazyllm.components.utils.downloader.model_downloader import LLMType
 from ..base import (
     OnlineChatModuleBase, LazyLLMOnlineEmbedModuleBase, LazyLLMOnlineRerankModuleBase,
-    LazyLLMOnlineSTTModuleBase, LazyLLMOnlineText2ImageModuleBase, LazyLLMOnlineTTSModuleBase
+    LazyLLMOnlineSTTModuleBase, LazyLLMOnlineText2ImageModuleBase, LazyLLMOnlineTTSModuleBase,
+    LazyLLMOnlineText2VideoModuleBase, LazyLLMOnlineImage2VideoModuleBase
 )
 from ..fileHandler import FileHandlerBase
 from http import HTTPStatus
@@ -612,3 +613,242 @@ class QwenTTS(LazyLLMOnlineTTSModuleBase, QwenMultiModal):
         }
         if self._api_key: call_params['api_key'] = self._api_key
         return encode_query_with_filepaths(None, bytes_to_file(synthesizer_func(**call_params)))
+
+
+class QwenText2Video(LazyLLMOnlineText2VideoModuleBase, QwenMultiModal):
+    """
+    Qwen Text-to-Video generation module using Wanx video synthesis API.
+
+    This module supports generating videos from text prompts using Alibaba's
+    Wanx video generation models (e.g., wanx2.1-t2v-turbo, wanx2.1-t2v-plus).
+
+    Example:
+        >>> t2v = QwenText2Video(model='wanx2.1-t2v-turbo')
+        >>> result = t2v('A cat playing with a ball in the garden')
+    """
+    MODEL_NAME = 'wanx2.1-t2v-turbo'
+
+    def __init__(self, model: str = None, api_key: str = None, return_trace: bool = False,
+                 base_url: str = 'https://dashscope.aliyuncs.com/api/v1',
+                 base_websocket_url: str = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+                 **kwargs):
+        model_name = model or lazyllm.config.get('qwen_text2video_model_name', None) or QwenText2Video.MODEL_NAME
+        super().__init__(api_key=api_key, model_name=model_name,
+                         return_trace=return_trace, base_url=base_url, **kwargs)
+        QwenMultiModal.__init__(self, api_key=api_key, base_url=base_url, base_websocket_url=base_websocket_url)
+
+    def _forward(self, input: str = None, size: str = '1280*720', duration: int = 5,
+                 prompt_extend: bool = True, seed: int = None,
+                 url: str = None, model: str = None, **kwargs):
+        """
+        Generate video from text prompt.
+
+        Args:
+            input: Text prompt describing the video to generate
+            size: Video resolution (e.g., '1280*720', '720*1280', '960*960')
+            duration: Video duration in seconds (default: 5)
+            prompt_extend: Whether to extend/optimize the prompt (default: True)
+            seed: Random seed for reproducibility
+            url: Override base URL (not supported)
+            model: Override model name
+            **kwargs: Additional parameters passed to the API
+
+        Returns:
+            Encoded query string with file paths to generated video files
+        """
+        if url and url != self._base_url:
+            raise Exception('Qwen Text2Video forward() does not support overriding the `url` parameter, '
+                            'please remove it.')
+
+        call_params = {
+            'model': model,
+            'input': {
+                'prompt': input,
+            },
+            'parameters': {
+                'size': size,
+                'duration': duration,
+                'prompt_extend': prompt_extend,
+            }
+        }
+        if seed is not None:
+            call_params['parameters']['seed'] = seed
+        call_params['parameters'].update(kwargs)
+        if self._api_key:
+            call_params['api_key'] = self._api_key
+
+        # Async call for video generation
+        task_response = dashscope.video_generation.VideoSynthesis.async_call(**call_params)
+        if task_response.status_code != HTTPStatus.OK:
+            raise RuntimeError(
+                f'Failed to create video synthesis task, '
+                f'status: {task_response.status_code}, message: {task_response.message}'
+            )
+
+        task_id = getattr(task_response.output, 'task_id', None)
+        if not task_id:
+            raise RuntimeError('No task_id returned from async video synthesis call')
+
+        # Wait for task completion
+        wait_params = {'task': task_id}
+        if self._api_key:
+            wait_params['api_key'] = self._api_key
+        response = dashscope.video_generation.VideoSynthesis.wait(**wait_params)
+
+        if response.status_code != HTTPStatus.OK:
+            error_msg = getattr(response.output, 'message', 'Unknown error')
+            raise Exception(f'Video generation failed: {error_msg}')
+
+        # Extract video URL from response
+        video_url = self._extract_video_url(response)
+        if not video_url:
+            raise Exception('No video URL found in response')
+
+        # Download video and return as file
+        video_content = requests.get(video_url, timeout=300).content
+        return encode_query_with_filepaths(None, bytes_to_file(video_content, suffix='.mp4'))
+
+    def _extract_video_url(self, response):
+        """Extract video URL from API response."""
+        try:
+            output = getattr(response, 'output', None)
+            if not output:
+                return None
+            video_url = getattr(output, 'video_url', None)
+            if video_url:
+                return video_url
+            # Try alternative response structure
+            results = getattr(output, 'results', [])
+            if results and len(results) > 0:
+                return getattr(results[0], 'url', None) or results[0].get('url')
+            return None
+        except Exception as e:
+            LOG.error(f'Failed to extract video URL: {str(e)}')
+            return None
+
+
+class QwenImage2Video(LazyLLMOnlineImage2VideoModuleBase, QwenMultiModal):
+    """
+    Qwen Image-to-Video generation module using Wanx video synthesis API.
+
+    This module supports generating videos from images with text prompts using
+    Alibaba's Wanx video generation models (e.g., wanx2.1-i2v-turbo, wanx2.1-i2v-plus).
+
+    Example:
+        >>> i2v = QwenImage2Video(model='wanx2.1-i2v-turbo')
+        >>> result = i2v('Make the cat walk forward', lazyllm_files=['cat.jpg'])
+    """
+    MODEL_NAME = 'wanx2.1-i2v-turbo'
+
+    def __init__(self, model: str = None, api_key: str = None, return_trace: bool = False,
+                 base_url: str = 'https://dashscope.aliyuncs.com/api/v1',
+                 base_websocket_url: str = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+                 **kwargs):
+        model_name = model or lazyllm.config.get('qwen_image2video_model_name', None) or QwenImage2Video.MODEL_NAME
+        super().__init__(api_key=api_key, model_name=model_name,
+                         return_trace=return_trace, base_url=base_url, **kwargs)
+        QwenMultiModal.__init__(self, api_key=api_key, base_url=base_url, base_websocket_url=base_websocket_url)
+
+    def _forward(self, input: str = None, files: List[str] = None, size: str = '1280*720',
+                 duration: int = 5, prompt_extend: bool = True, seed: int = None,
+                 url: str = None, model: str = None, **kwargs):
+        """
+        Generate video from image with optional text prompt.
+
+        Args:
+            input: Text prompt describing the video motion/action (optional)
+            files: List of image file paths or URLs (required, first image used)
+            size: Video resolution (e.g., '1280*720', '720*1280', '960*960')
+            duration: Video duration in seconds (default: 5)
+            prompt_extend: Whether to extend/optimize the prompt (default: True)
+            seed: Random seed for reproducibility
+            url: Override base URL (not supported)
+            model: Override model name
+            **kwargs: Additional parameters passed to the API
+
+        Returns:
+            Encoded query string with file paths to generated video files
+        """
+        if url and url != self._base_url:
+            raise Exception('Qwen Image2Video forward() does not support overriding the `url` parameter, '
+                            'please remove it.')
+
+        if not files or len(files) == 0:
+            raise ValueError('Image2Video requires at least one image file. '
+                             'Please provide image file(s) via the "files" parameter.')
+
+        # Load and encode the first image
+        image_results = self._load_images(files[:1])
+        base64_str, _ = image_results[0]
+        image_data = f'data:image/png;base64,{base64_str}'
+
+        call_params = {
+            'model': model,
+            'input': {
+                'image_url': image_data,
+            },
+            'parameters': {
+                'size': size,
+                'duration': duration,
+                'prompt_extend': prompt_extend,
+            }
+        }
+
+        # Add prompt if provided
+        if input:
+            call_params['input']['prompt'] = input
+
+        if seed is not None:
+            call_params['parameters']['seed'] = seed
+        call_params['parameters'].update(kwargs)
+        if self._api_key:
+            call_params['api_key'] = self._api_key
+
+        # Async call for video generation
+        task_response = dashscope.video_generation.VideoSynthesis.async_call(**call_params)
+        if task_response.status_code != HTTPStatus.OK:
+            raise RuntimeError(
+                f'Failed to create video synthesis task, '
+                f'status: {task_response.status_code}, message: {task_response.message}'
+            )
+
+        task_id = getattr(task_response.output, 'task_id', None)
+        if not task_id:
+            raise RuntimeError('No task_id returned from async video synthesis call')
+
+        # Wait for task completion
+        wait_params = {'task': task_id}
+        if self._api_key:
+            wait_params['api_key'] = self._api_key
+        response = dashscope.video_generation.VideoSynthesis.wait(**wait_params)
+
+        if response.status_code != HTTPStatus.OK:
+            error_msg = getattr(response.output, 'message', 'Unknown error')
+            raise Exception(f'Video generation failed: {error_msg}')
+
+        # Extract video URL from response
+        video_url = self._extract_video_url(response)
+        if not video_url:
+            raise Exception('No video URL found in response')
+
+        # Download video and return as file
+        video_content = requests.get(video_url, timeout=300).content
+        return encode_query_with_filepaths(None, bytes_to_file(video_content, suffix='.mp4'))
+
+    def _extract_video_url(self, response):
+        """Extract video URL from API response."""
+        try:
+            output = getattr(response, 'output', None)
+            if not output:
+                return None
+            video_url = getattr(output, 'video_url', None)
+            if video_url:
+                return video_url
+            # Try alternative response structure
+            results = getattr(output, 'results', [])
+            if results and len(results) > 0:
+                return getattr(results[0], 'url', None) or results[0].get('url')
+            return None
+        except Exception as e:
+            LOG.error(f'Failed to extract video URL: {str(e)}')
+            return None

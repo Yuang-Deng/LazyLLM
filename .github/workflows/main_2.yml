@@ -36,7 +36,7 @@ jobs:
       always()
       && !contains(github.event.head_commit.message, '[skip ci]')
       && !contains(github.event.pull_request.title, '[skip ci]')
-    runs-on: tps_sco_nv
+    runs-on: dya_test
     outputs:
       changed_files: ${{ steps.changed_files_yaml.outputs.all_changed_files }}
     steps:

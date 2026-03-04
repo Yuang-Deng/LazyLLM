@@ -9,7 +9,7 @@ on:
         type: boolean
   push:
     branches:
-      - main
+      - fix_sandbox_bug
     tags:
       - "v*.*.*a*"
       - "v*.*.*b*"

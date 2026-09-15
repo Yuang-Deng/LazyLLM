@@ -223,6 +223,48 @@ class FeishuFSBase(LinkDocumentFSBase):
                               oauth_auto=(rt == 'auto'))
         return super()._make_credential(token, dynamic_auth)
 
+    def search_documents(self, query: str, page_size: int = 20, page_token: str = '') -> Dict[str, Any]:
+        """Search one page of ordinary cloud documents and Wiki using user authorization.
+
+        Args:
+            query: Keywords to search across documents visible to the current user.
+            page_size: Maximum results in this page, between 1 and 20.
+            page_token: Continuation token from a previous call with the same query.
+
+        Returns:
+            Results with provider metadata, highlighted title/summary when supplied,
+            and has_more/page_token. Read returned document URLs only if more evidence
+            is needed. Missing permission and expired credentials propagate to the caller.
+        """
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError('query is required')
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 20:
+            raise ValueError('page_size must be between 1 and 20')
+        if not isinstance(page_token, str):
+            raise ValueError('page_token must be a string')
+        # LazyMind injects the connected user's token into dynamic_fs_auth. Never
+        # bootstrap an app/tenant credential to satisfy a user-scoped search.
+        if self._credential.kind not in ('dynamic', 'oauth2'):
+            raise ValueError('search_documents requires user OAuth authorization')
+        self.ensure_token()
+        # Both empty filters are necessary: omitting them can return success with no hits.
+        payload = {'query': query.strip(), 'page_size': page_size, 'doc_filter': {}, 'wiki_filter': {}}
+        if page_token:
+            payload['page_token'] = page_token
+        response = self._post(f'{self._base_url}/search/v2/doc_wiki/search', json=payload, timeout=15)
+        if response.get('code', 0) != 0:
+            raise RuntimeError('Feishu document search failed: code=%s, message=%s' % (
+                response.get('code'), response.get('msg', 'unknown error')))
+        data = response.get('data') or {}
+        return {
+            'source': 'feishu',
+            'results': data.get('res_units') or [],
+            'has_more': bool(data.get('has_more')),
+            'page_token': data.get('page_token') or '',
+            'total': data.get('total'),
+            'coverage': 'Documents and Wiki visible to the authorized user; provider search coverage applies.',
+        }
+
     @property
     def _app_id(self) -> str:
         return self._secret_key.get('app_id', '')
@@ -1340,7 +1382,7 @@ class FeishuFS(FeishuFSBase):
         r'https?://[^\s/]+\.(?:feishu\.(?:cn|com)|larksuite\.com)(?:[/:?#]|$)',
         r'飞书|(?<!\w)feishu(?!\w)',
     ]
-    __public_apis__ = LazyLLMFSBase.__public_apis__ + ['create_document']
+    __public_apis__ = LazyLLMFSBase.__public_apis__ + ['create_document', 'search_documents']
 
     def __new__(cls, base_url: Optional[str] = None, app_id: Optional[str] = None, app_secret: Optional[str] = None,
                 space_id: Optional[str] = None, user_refresh_token: Optional[str] = None,
@@ -1588,7 +1630,7 @@ class FeishuWikiFS(FeishuFSBase):
     protocol = 'feishu'
     _fs_protocol_key = 'feishu'
     document_provider = 'feishu'
-    __public_apis__ = LinkDocumentFSBase.build_public_apis(extra=['search', 'find'])
+    __public_apis__ = LinkDocumentFSBase.build_public_apis(extra=['search', 'search_documents', 'find'])
 
     def _create_docx_node(self, title: str, parent_token: str = '') -> Dict[str, Any]:
         url = f'{self._base_url}/wiki/v2/spaces/{self._effective_space_id()}/nodes'
